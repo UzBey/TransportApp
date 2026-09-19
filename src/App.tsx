@@ -182,7 +182,34 @@ type AppUser = {
   name: string
   rolle: UserRole
   aktiv: boolean
+  freigabestatus: "Ausstehend" | "Freigegeben" | "Gesperrt"
   berechtigungen: PermissionKey[]
+}
+
+type SopRecord = {
+  id: number
+  titel: string
+  beschreibung: string | null
+  inhalt: string
+  version: string
+  aktiv: boolean
+  erstellt_am: string | null
+  geaendert_am: string | null
+  erstellt_von: string | null
+}
+
+type SopConfirmation = {
+  id: number
+  sop_id: number
+  fahrer_id: string
+  version: string
+  bestaetigt_am: string | null
+  bestaetigungstext: string | null
+}
+
+type AdminSopConfirmation = SopConfirmation & {
+  fahrer_name: string
+  fahrer_email: string
 }
 
 const permissionOptions: { key: PermissionKey; label: string }[] = [
@@ -558,6 +585,7 @@ function App() {
     | "tour-management"
     | "customers"
     | "users"
+    | "sops"
     | "driver-tours"
     | "dispatcher"
     | "fleet"
@@ -591,7 +619,26 @@ function App() {
   const [permissionDrafts, setPermissionDrafts] = useState<Record<string, PermissionKey[]>>({})
   const [permissionSavingId, setPermissionSavingId] = useState<string | null>(null)
 
+  const [sops, setSops] = useState<SopRecord[]>([])
+  const [sopConfirmations, setSopConfirmations] = useState<SopConfirmation[]>([])
+  const [sopLoading, setSopLoading] = useState(false)
+  const [sopError, setSopError] = useState("")
+  const [sopSaving, setSopSaving] = useState(false)
+  const [sopConfirmingId, setSopConfirmingId] = useState<number | null>(null)
+  const [sopReminderOpen, setSopReminderOpen] = useState(false)
+  const [adminSopConfirmations, setAdminSopConfirmations] = useState<AdminSopConfirmation[]>([])
+  const [adminSopLoading, setAdminSopLoading] = useState(false)
+  const [adminSopError, setAdminSopError] = useState("")
+  const [adminSopPdfLoadingId, setAdminSopPdfLoadingId] = useState<string | null>(null)
+  const [sopFormOpen, setSopFormOpen] = useState(false)
+  const [sopEditingId, setSopEditingId] = useState<number | null>(null)
+  const [sopTitle, setSopTitle] = useState("")
+  const [sopDescription, setSopDescription] = useState("")
+  const [sopContent, setSopContent] = useState("")
+  const [sopVersion, setSopVersion] = useState("1.0")
+
   const isAdmin = currentUser?.rolle === "Admin"
+  const canManageSops = isAdmin || currentUser?.rolle === "Disponent"
 
   function hasPermission(permission: PermissionKey): boolean {
     if (isAdmin) return true
@@ -639,7 +686,7 @@ function App() {
 
     const { data, error } = await supabase
       .from("benutzer")
-      .select("id, email, name, rolle, aktiv")
+      .select("id, email, name, rolle, aktiv, freigabestatus")
       .eq("id", session.user.id)
       .maybeSingle()
 
@@ -660,6 +707,12 @@ function App() {
       name: String(data.name || ""),
       rolle: (data.rolle as UserRole) || "Fahrer",
       aktiv: data.aktiv !== false,
+      freigabestatus:
+        data.freigabestatus === "Freigegeben"
+          ? "Freigegeben"
+          : data.freigabestatus === "Gesperrt"
+            ? "Gesperrt"
+            : "Ausstehend",
       berechtigungen: [],
     })
 
@@ -826,7 +879,7 @@ function App() {
 
     const { data, error } = await supabase
       .from("benutzer")
-      .select("id, email, name, rolle, aktiv")
+      .select("id, email, name, rolle, aktiv, freigabestatus")
       .order("name", { ascending: true })
 
     setUsersLoading(false)
@@ -844,6 +897,12 @@ function App() {
         name: String(row.name || ""),
         rolle: (row.rolle as UserRole) || "Fahrer",
         aktiv: row.aktiv !== false,
+        freigabestatus:
+          row.freigabestatus === "Freigegeben"
+            ? "Freigegeben"
+            : row.freigabestatus === "Gesperrt"
+              ? "Gesperrt"
+              : "Ausstehend",
         berechtigungen: [],
       }))
     )
@@ -862,6 +921,39 @@ function App() {
 
     setAppUsers((old) => old.map((user) => ({ ...user, berechtigungen: grouped[user.id] || [] })))
     setPermissionDrafts(grouped)
+  }
+
+  async function changeUserApproval(
+    userId: string,
+    freigabestatus: "Ausstehend" | "Freigegeben" | "Gesperrt"
+  ) {
+    if (!canManageSops && !isAdmin) return
+    if (userId === currentUser?.id) {
+      alert("Dein eigener Account kann hier nicht gesperrt oder zurückgesetzt werden.")
+      return
+    }
+
+    const { error } = await supabase
+      .from("benutzer")
+      .update({ freigabestatus })
+      .eq("id", userId)
+
+    if (error) {
+      alert("Benutzerfreigabe konnte nicht geändert werden:\n\n" + error.message)
+      return
+    }
+
+    setAppUsers((old) =>
+      old.map((user) =>
+        user.id === userId ? { ...user, freigabestatus } : user
+      )
+    )
+
+    if (userId === currentUser?.id) {
+      setCurrentUser((old) => old ? { ...old, freigabestatus } : old)
+    }
+
+    await loadAssignmentUsers()
   }
 
   async function changeUserRole(userId: string, rolle: UserRole) {
@@ -946,9 +1038,10 @@ function App() {
     setAssignmentUsersLoading(true)
     const { data, error } = await supabase
       .from("benutzer")
-      .select("id, email, name, rolle, aktiv")
+      .select("id, email, name, rolle, aktiv, freigabestatus")
       .eq("rolle", "Fahrer")
       .eq("aktiv", true)
+      .eq("freigabestatus", "Freigegeben")
       .order("name", { ascending: true })
     setAssignmentUsersLoading(false)
     if (error) {
@@ -961,6 +1054,12 @@ function App() {
       name: String(row.name || ""),
       rolle: (row.rolle as UserRole) || "Fahrer",
       aktiv: row.aktiv !== false,
+      freigabestatus:
+        row.freigabestatus === "Freigegeben"
+          ? "Freigegeben"
+          : row.freigabestatus === "Gesperrt"
+            ? "Gesperrt"
+            : "Ausstehend",
       berechtigungen: [],
     })))
   }
@@ -973,9 +1072,17 @@ function App() {
 
   useEffect(() => {
     if (page === "users" && isAdmin) {
-      loadAppUsers()
+      loadAppUsers().then(() => {
+        loadAdminSopOverview()
+      })
     }
   }, [page, isAdmin])
+
+  useEffect(() => {
+    if (page === "users" && isAdmin && appUsers.length > 0) {
+      loadAdminSopOverview()
+    }
+  }, [page, isAdmin, appUsers.length])
 
   useEffect(() => {
     if (page === "dispatcher" && hasPermission("touren_verwalten")) {
@@ -3296,7 +3403,7 @@ function App() {
     setDriverProfileLoading(true)
     const { data, error } = await supabase
       .from("benutzer")
-      .select("id,email,name,rolle,aktiv,telefon,fuehrerscheinnummer,fuehrerschein_gueltig_bis")
+      .select("id,email,name,rolle,aktiv,freigabestatus,telefon,fuehrerscheinnummer,fuehrerschein_gueltig_bis")
       .eq("rolle", "Fahrer")
       .order("name")
     if (error) {
@@ -3309,6 +3416,12 @@ function App() {
         name: String(row.name || ""),
         rolle: "Fahrer",
         aktiv: Boolean(row.aktiv),
+        freigabestatus:
+          row.freigabestatus === "Freigegeben"
+            ? "Freigegeben"
+            : row.freigabestatus === "Gesperrt"
+              ? "Gesperrt"
+              : "Ausstehend",
         berechtigungen: [],
         telefon: String(row.telefon || ""),
         fuehrerscheinnummer: String(row.fuehrerscheinnummer || ""),
@@ -5877,6 +5990,362 @@ function App() {
   }
 
   // =====================================================
+  // SOP / SCHULUNGEN
+  // =====================================================
+
+  async function loadSops() {
+    if (!currentUser?.id || currentUser.freigabestatus !== "Freigegeben" || !currentUser.aktiv) return
+
+    setSopLoading(true)
+    setSopError("")
+
+    const { data, error } = await supabase
+      .from("sops")
+      .select("id, titel, beschreibung, inhalt, version, aktiv, erstellt_am, geaendert_am, erstellt_von")
+      .eq("aktiv", true)
+      .order("geaendert_am", { ascending: false })
+
+    if (error) {
+      console.error("Fehler beim Laden der SOPs:", error)
+      setSopError(error.message)
+      setSops([])
+      setSopConfirmations([])
+      setSopLoading(false)
+      return
+    }
+
+    const activeSops = (data || []) as SopRecord[]
+    setSops(activeSops)
+
+    const { data: confirmations, error: confirmationError } = await supabase
+      .from("sop_bestaetigungen")
+      .select("id, sop_id, fahrer_id, version, bestaetigt_am, bestaetigungstext")
+      .eq("fahrer_id", currentUser.id)
+
+    if (confirmationError) {
+      console.error("Fehler beim Laden der SOP-Bestätigungen:", confirmationError)
+      setSopError(confirmationError.message)
+    } else {
+      const loadedConfirmations = (confirmations || []) as SopConfirmation[]
+      setSopConfirmations(loadedConfirmations)
+
+      if (currentUser.rolle === "Fahrer") {
+        const pending = activeSops.filter(
+          (sop) => !loadedConfirmations.some(
+            (item) => item.sop_id === sop.id && item.version === sop.version && item.fahrer_id === currentUser.id
+          )
+        )
+        setSopReminderOpen(pending.length > 0)
+      }
+    }
+
+    setSopLoading(false)
+  }
+
+  async function loadAdminSopOverview() {
+    if (!isAdmin) return
+
+    setAdminSopLoading(true)
+    setAdminSopError("")
+
+    const [{ data: sopRows, error: sopError }, { data: confirmationRows, error: confirmationError }] = await Promise.all([
+      supabase
+        .from("sops")
+        .select("id, titel, beschreibung, inhalt, version, aktiv, erstellt_am, geaendert_am, erstellt_von")
+        .order("geaendert_am", { ascending: false }),
+      supabase
+        .from("sop_bestaetigungen")
+        .select("id, sop_id, fahrer_id, version, bestaetigt_am, bestaetigungstext")
+        .order("bestaetigt_am", { ascending: false }),
+    ])
+
+    if (sopError) {
+      setAdminSopError(sopError.message)
+      setAdminSopLoading(false)
+      return
+    }
+
+    if (confirmationError) {
+      setAdminSopError(confirmationError.message)
+      setAdminSopLoading(false)
+      return
+    }
+
+    const usersById = new Map<string, AppUser>(appUsers.map((user) => [user.id, user]))
+    const confirmations = (confirmationRows || []).map((row) => {
+      const user = usersById.get(String(row.fahrer_id))
+      return {
+        id: Number(row.id),
+        sop_id: Number(row.sop_id),
+        fahrer_id: String(row.fahrer_id),
+        version: String(row.version),
+        bestaetigt_am: row.bestaetigt_am ? String(row.bestaetigt_am) : null,
+        bestaetigungstext: row.bestaetigungstext ? String(row.bestaetigungstext) : null,
+        fahrer_name: user?.name || "Unbekannter Benutzer",
+        fahrer_email: user?.email || "",
+      } as AdminSopConfirmation
+    })
+
+    setSops((sopRows || []) as SopRecord[])
+    setAdminSopConfirmations(confirmations)
+    setAdminSopLoading(false)
+  }
+
+  async function downloadSopConfirmationPdf(user: AppUser) {
+    if (!isAdmin) return
+
+    setAdminSopPdfLoadingId(user.id)
+    try {
+      const [{ data: sopRows, error: sopError }, { data: confirmationRows, error: confirmationError }] = await Promise.all([
+        supabase
+          .from("sops")
+          .select("id, titel, beschreibung, inhalt, version, aktiv, erstellt_am, geaendert_am, erstellt_von")
+          .order("titel", { ascending: true }),
+        supabase
+          .from("sop_bestaetigungen")
+          .select("id, sop_id, fahrer_id, version, bestaetigt_am, bestaetigungstext")
+          .eq("fahrer_id", user.id)
+          .order("bestaetigt_am", { ascending: true }),
+      ])
+
+      if (sopError || confirmationError) {
+        alert("Die SOP-Bestätigungen konnten nicht geladen werden.\n\n" + (sopError?.message || confirmationError?.message))
+        return
+      }
+
+      const allSops = (sopRows || []) as SopRecord[]
+      const confirmations = (confirmationRows || []) as SopConfirmation[]
+      const confirmedKeys = new Set(confirmations.map((item) => `${item.sop_id}|${item.version}`))
+      const confirmedSops = confirmations.map((confirmation) => {
+        const sop = allSops.find((item) => item.id === confirmation.sop_id && item.version === confirmation.version)
+        return { confirmation, sop }
+      })
+
+      const doc = new jsPDF()
+      const margin = 16
+      const pageWidth = doc.internal.pageSize.getWidth()
+      const pageHeight = doc.internal.pageSize.getHeight()
+      let y = 18
+
+      const addText = (text: string, x = margin, fontSize = 10, maxWidth = pageWidth - margin * 2) => {
+        doc.setFont("helvetica", "normal")
+        doc.setFontSize(fontSize)
+        const lines = doc.splitTextToSize(text, maxWidth) as string[]
+        for (const line of lines) {
+          if (y > pageHeight - 18) {
+            doc.addPage()
+            y = 18
+          }
+          doc.text(line, x, y)
+          y += fontSize * 0.5 + 3
+        }
+      }
+
+      doc.setFont("helvetica", "bold")
+      doc.setFontSize(16)
+      doc.text("TransportAPP – SOP-Bestätigungen", margin, y)
+      y += 10
+
+      doc.setFont("helvetica", "bold")
+      doc.setFontSize(11)
+      doc.text("Fahrer", margin, y)
+      y += 6
+      addText(user.name || "Ohne Namen")
+      addText(user.email)
+      y += 4
+
+      doc.setFont("helvetica", "bold")
+      doc.setFontSize(11)
+      doc.text("Erstellter Bericht", margin, y)
+      y += 6
+      addText(new Date().toLocaleString("de-DE"))
+      y += 6
+
+      doc.setFont("helvetica", "bold")
+      doc.setFontSize(12)
+      doc.text("Bestätigte SOPs", margin, y)
+      y += 8
+
+      if (confirmedSops.length === 0) {
+        addText("Noch keine SOP bestätigt.")
+      } else {
+        for (const item of confirmedSops) {
+          const sop = item.sop
+          doc.setFont("helvetica", "bold")
+          doc.setFontSize(10)
+          if (y > pageHeight - 30) {
+            doc.addPage()
+            y = 18
+          }
+          doc.text(sop?.titel || `SOP #${item.confirmation.sop_id}`, margin, y)
+          y += 5
+          addText(`Version: ${item.confirmation.version}`)
+          addText(`Bestätigt von: ${user.name || "Ohne Namen"}`)
+          addText(`E-Mail: ${user.email}`)
+          addText(`Bestätigt am: ${item.confirmation.bestaetigt_am ? new Date(item.confirmation.bestaetigt_am).toLocaleString("de-DE") : "—"}`)
+          y += 5
+        }
+      }
+
+      y += 4
+      doc.setFont("helvetica", "bold")
+      doc.setFontSize(12)
+      if (y > pageHeight - 30) {
+        doc.addPage()
+        y = 18
+      }
+      doc.text("Noch offene SOPs", margin, y)
+      y += 8
+
+      const activeSops = allSops.filter((sop) => sop.aktiv)
+      const openSops = activeSops.filter((sop) => !confirmedKeys.has(`${sop.id}|${sop.version}`))
+
+      if (openSops.length === 0) {
+        addText("Alle aktuell aktiven SOPs wurden bestätigt.")
+      } else {
+        for (const sop of openSops) {
+          addText(`• ${sop.titel} – Version ${sop.version}`)
+        }
+      }
+
+      doc.save(`SOP-Bestaetigungen-${(user.name || "Fahrer").replace(/[^a-zA-Z0-9äöüÄÖÜß_-]+/g, "_")}.pdf`)
+    } finally {
+      setAdminSopPdfLoadingId(null)
+    }
+  }
+
+  function resetSopForm() {
+    setSopFormOpen(false)
+    setSopEditingId(null)
+    setSopTitle("")
+    setSopDescription("")
+    setSopContent("")
+    setSopVersion("1.0")
+  }
+
+  function openSopCreate() {
+    setSopEditingId(null)
+    setSopTitle("")
+    setSopDescription("")
+    setSopContent("")
+    setSopVersion("1.0")
+    setSopFormOpen(true)
+  }
+
+  function openSopEdit(sop: SopRecord) {
+    setSopEditingId(sop.id)
+    setSopTitle(sop.titel)
+    setSopDescription(sop.beschreibung || "")
+    setSopContent(sop.inhalt)
+    setSopVersion(sop.version)
+    setSopFormOpen(true)
+  }
+
+  async function saveSop() {
+    if (!canManageSops) return
+    if (!sopTitle.trim() || !sopContent.trim() || !sopVersion.trim()) {
+      alert("Bitte Titel, Inhalt und Version ausfüllen.")
+      return
+    }
+
+    setSopSaving(true)
+
+    const payload = {
+      titel: sopTitle.trim(),
+      beschreibung: sopDescription.trim() || null,
+      inhalt: sopContent.trim(),
+      version: sopVersion.trim(),
+      aktiv: true,
+    }
+
+    const result = sopEditingId
+      ? await supabase.from("sops").update(payload).eq("id", sopEditingId)
+      : await supabase.from("sops").insert({ ...payload, erstellt_von: currentUser?.id || null })
+
+    if (result.error) {
+      alert("SOP konnte nicht gespeichert werden:\n\n" + result.error.message)
+      setSopSaving(false)
+      return
+    }
+
+    resetSopForm()
+    await loadSops()
+    setSopSaving(false)
+  }
+
+  async function deactivateSop(sopId: number) {
+    if (!canManageSops) return
+    if (!window.confirm("Diese SOP wirklich deaktivieren?")) return
+
+    const { error } = await supabase
+      .from("sops")
+      .update({ aktiv: false })
+      .eq("id", sopId)
+
+    if (error) {
+      alert("SOP konnte nicht deaktiviert werden:\n\n" + error.message)
+      return
+    }
+
+    await loadSops()
+  }
+
+  function hasConfirmedSop(sop: SopRecord) {
+    return sopConfirmations.some(
+      (item) => item.sop_id === sop.id && item.version === sop.version && item.fahrer_id === currentUser?.id
+    )
+  }
+
+  async function confirmSop(sop: SopRecord) {
+    if (!currentUser?.id || currentUser.freigabestatus !== "Freigegeben") return
+    if (hasConfirmedSop(sop)) return
+
+    setSopConfirmingId(sop.id)
+
+    const { data, error } = await supabase
+      .from("sop_bestaetigungen")
+      .insert({
+        sop_id: sop.id,
+        fahrer_id: currentUser.id,
+        version: sop.version,
+        bestaetigungstext: `Ich bestätige die SOP „${sop.titel}“ in Version ${sop.version} gelesen und verstanden zu haben.`,
+      })
+      .select("id, sop_id, fahrer_id, version, bestaetigt_am, bestaetigungstext")
+      .maybeSingle()
+
+    if (error) {
+      if (error.code === "23505") {
+        await loadSops()
+      } else {
+        alert("SOP konnte nicht bestätigt werden:\n\n" + error.message)
+      }
+      setSopConfirmingId(null)
+      return
+    }
+
+    if (data) {
+      const nextConfirmation = data as SopConfirmation
+      setSopConfirmations((old) => {
+        const next = [...old, nextConfirmation]
+        const pending = sops.filter(
+          (item) => !next.some(
+            (confirmation) =>
+              confirmation.sop_id === item.id &&
+              confirmation.version === item.version &&
+              confirmation.fahrer_id === currentUser.id
+          )
+        )
+        if (pending.length === 0) {
+          setSopReminderOpen(false)
+        }
+        return next
+      })
+    }
+
+    setSopConfirmingId(null)
+  }
+
+  // =====================================================
   // NAVIGATION
   // =====================================================
 
@@ -5890,6 +6359,7 @@ function App() {
       | "tour-management"
       | "customers"
       | "users"
+      | "sops"
       | "driver-tours"
       | "dispatcher"
       | "fleet"
@@ -5918,8 +6388,9 @@ function App() {
     }
 
     if (nextPage === "users" && !isAdmin) return
+    if (nextPage === "sops" && !currentUser) return
     if (nextPage === "customers" && !(isAdmin || currentUser?.rolle === "Disponent" || hasPermission("kunden") || hasPermission("touren_verwalten") || hasPermission("touren_anlegen"))) return
-    if (nextPage !== "users" && nextPage !== "customers" && requiredPermission[nextPage] && !hasPermission(requiredPermission[nextPage]!)) return
+    if (nextPage !== "users" && nextPage !== "customers" && nextPage !== "sops" && requiredPermission[nextPage] && !hasPermission(requiredPermission[nextPage]!)) return
 
     setPage(nextPage)
 
@@ -5937,6 +6408,10 @@ function App() {
     if (nextPage === "dashboard") {
       loadDashboardStats()
       loadDefectCounts()
+    }
+
+    if (nextPage === "sops") {
+      loadSops()
     }
 
     if (nextPage === "defect") {
@@ -6193,7 +6668,7 @@ function App() {
 
           {authMode === "signup" && (
             <p style={{ marginTop: "12px", fontSize: "14px" }}>
-              Das erste registrierte Konto wird automatisch als <strong>Admin</strong> angelegt. Weitere neue Konten starten als <strong>Fahrer</strong>.
+              Das erste registrierte Konto wird automatisch als <strong>Admin</strong> angelegt. Weitere neue Konten werden zunächst als <strong>Fahrer</strong> angelegt und müssen vom Administrator freigegeben werden.
             </p>
           )}
 
@@ -6220,6 +6695,32 @@ function App() {
     )
   }
 
+  if (currentUser.freigabestatus === "Ausstehend") {
+    return (
+      <div className="app" style={{ minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center", padding: "24px" }}>
+        <div className="card" style={{ width: "100%", maxWidth: "560px", textAlign: "center" }}>
+          <div style={{ fontSize: "48px", marginBottom: "12px" }}>⏳</div>
+          <h2>Freigabe ausstehend</h2>
+          <p>Dein Konto wartet noch auf die Freigabe durch den Administrator.</p>
+          <button className="secondary-button" onClick={logoutUser}>Abmelden</button>
+        </div>
+      </div>
+    )
+  }
+
+  if (currentUser.freigabestatus === "Gesperrt") {
+    return (
+      <div className="app" style={{ minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center", padding: "24px" }}>
+        <div className="card" style={{ width: "100%", maxWidth: "560px", textAlign: "center" }}>
+          <div style={{ fontSize: "48px", marginBottom: "12px" }}>🚫</div>
+          <h2>Konto gesperrt</h2>
+          <p>Dein TransportApp-Konto wurde durch einen Administrator gesperrt.</p>
+          <button className="secondary-button" onClick={logoutUser}>Abmelden</button>
+        </div>
+      </div>
+    )
+  }
+
   if (!currentUser.aktiv) {
     return (
       <div className="app" style={{ minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center", padding: "24px" }}>
@@ -6231,6 +6732,74 @@ function App() {
       </div>
     )
   }
+
+  {currentUser.rolle === "Fahrer" && sopReminderOpen && (
+    <div
+      style={{
+        position: "fixed",
+        inset: 0,
+        background: "rgba(15, 23, 42, 0.58)",
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        padding: "20px",
+        zIndex: 5000,
+      }}
+    >
+      <div
+        className="card"
+        style={{
+          width: "100%",
+          maxWidth: "620px",
+          maxHeight: "85vh",
+          overflowY: "auto",
+          boxShadow: "0 20px 60px rgba(0,0,0,0.25)",
+        }}
+      >
+        <div style={{ fontSize: "46px", textAlign: "center" }}>📚</div>
+        <h2 style={{ textAlign: "center" }}>SOPs müssen noch bestätigt werden</h2>
+        <p style={{ textAlign: "center" }}>
+          Bitte lies die folgenden Arbeitsanweisungen und bestätige sie, bevor du sie als erledigt markieren kannst.
+        </p>
+
+        <div style={{ display: "grid", gap: "10px", marginTop: "16px" }}>
+          {sops
+            .filter((sop) => !hasConfirmedSop(sop))
+            .map((sop) => (
+              <div
+                key={sop.id}
+                style={{
+                  border: "1px solid #e5e7eb",
+                  borderRadius: "12px",
+                  padding: "12px",
+                  background: "rgba(245, 158, 11, 0.08)",
+                }}
+              >
+                <strong>{sop.titel}</strong>
+                <div style={{ fontSize: "14px", opacity: 0.75 }}>Version {sop.version}</div>
+                {sop.beschreibung && <p style={{ marginBottom: "8px" }}>{sop.beschreibung}</p>}
+                <button
+                  type="button"
+                  className="primary-button"
+                  onClick={() => {
+                    setSopReminderOpen(false)
+                    navigateTo("sops")
+                  }}
+                >
+                  SOP öffnen und lesen
+                </button>
+              </div>
+            ))}
+        </div>
+
+        <div style={{ display: "flex", justifyContent: "center", marginTop: "16px" }}>
+          <button type="button" className="secondary-button" onClick={() => setSopReminderOpen(false)}>
+            Später öffnen
+          </button>
+        </div>
+      </div>
+    </div>
+  )}
 
   // =====================================================
   // FAHRER-TAGESÜBERSICHT
@@ -6748,6 +7317,13 @@ function App() {
             )}
           </button>
         )}
+
+        <button
+          className={page === "sops" ? "nav active" : "nav"}
+          onClick={() => navigateTo("sops")}
+        >
+          <span style={{ marginRight: "8px" }}>📚</span>SOP & Schulungen
+        </button>
 
         {isAdmin && (
           <button
@@ -10620,9 +11196,48 @@ function App() {
                   </div>
 
                   <div>
-                    <strong>Status:</strong>{" "}
-                    {user.aktiv ? "Aktiv" : "Deaktiviert"}
+                    <strong>Freigabe:</strong>{" "}
+                    {user.freigabestatus === "Freigegeben"
+                      ? "✅ Freigegeben"
+                      : user.freigabestatus === "Gesperrt"
+                        ? "🚫 Gesperrt"
+                        : "⏳ Ausstehend"}
+                    <div style={{ marginTop: "6px", fontSize: "14px" }}>
+                      Konto: {user.aktiv ? "Aktiv" : "Deaktiviert"}
+                    </div>
                   </div>
+
+                  {user.id !== currentUser?.id && (
+                    <div style={{ display: "flex", gap: "8px", flexWrap: "wrap" }}>
+                      {user.freigabestatus !== "Freigegeben" && (
+                        <button
+                          type="button"
+                          className="primary-button"
+                          onClick={() => changeUserApproval(user.id, "Freigegeben")}
+                        >
+                          ✅ Freigeben
+                        </button>
+                      )}
+                      {user.freigabestatus !== "Gesperrt" && (
+                        <button
+                          type="button"
+                          className="secondary-button"
+                          onClick={() => changeUserApproval(user.id, "Gesperrt")}
+                        >
+                          🚫 Sperren
+                        </button>
+                      )}
+                      {user.freigabestatus === "Gesperrt" && (
+                        <button
+                          type="button"
+                          className="secondary-button"
+                          onClick={() => changeUserApproval(user.id, "Ausstehend")}
+                        >
+                          ⏳ Auf ausstehend
+                        </button>
+                      )}
+                    </div>
+                  )}
 
                   <div style={{ gridColumn: "1 / -1", borderTop: "1px solid #e5e7eb", paddingTop: "14px" }}>
                     <strong>Berechtigungen</strong>
@@ -10654,10 +11269,228 @@ function App() {
                 </div>
               ))}
 
+              <div style={{ marginTop: "24px", borderTop: "2px solid #e5e7eb", paddingTop: "20px" }}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: "12px", flexWrap: "wrap" }}>
+                  <div>
+                    <h3 style={{ marginBottom: "4px" }}>📚 SOP-Übersicht</h3>
+                    <p style={{ margin: 0 }}>
+                      Hier siehst du, welche Fahrer welche SOP-Versionen bestätigt haben und was noch offen ist.
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    className="secondary-button"
+                    onClick={loadAdminSopOverview}
+                    disabled={adminSopLoading}
+                  >
+                    {adminSopLoading ? "Wird geladen..." : "↻ SOP-Status aktualisieren"}
+                  </button>
+                </div>
+
+                {adminSopError && <p className="warning" style={{ marginTop: "12px" }}>{adminSopError}</p>}
+
+                {!adminSopLoading && (
+                  <div style={{ display: "grid", gap: "10px", marginTop: "14px" }}>
+                    {appUsers
+                      .filter((user) => user.rolle === "Fahrer")
+                      .map((driver) => {
+                        const activeSops = sops.filter((sop) => sop.aktiv)
+                        const confirmed = activeSops.filter((sop) =>
+                          adminSopConfirmations.some(
+                            (item) =>
+                              item.fahrer_id === driver.id &&
+                              item.sop_id === sop.id &&
+                              item.version === sop.version
+                          )
+                        )
+                        const open = activeSops.filter((sop) =>
+                          !adminSopConfirmations.some(
+                            (item) =>
+                              item.fahrer_id === driver.id &&
+                              item.sop_id === sop.id &&
+                              item.version === sop.version
+                          )
+                        )
+
+                        return (
+                          <div key={driver.id} style={{ border: "1px solid #e5e7eb", borderRadius: "12px", padding: "14px" }}>
+                            <div style={{ display: "flex", justifyContent: "space-between", gap: "12px", flexWrap: "wrap", alignItems: "center" }}>
+                              <div>
+                                <strong>{driver.name || "Ohne Namen"}</strong>
+                                <div style={{ fontSize: "14px", opacity: 0.75 }}>{driver.email}</div>
+                              </div>
+                              <div style={{ display: "flex", gap: "8px", flexWrap: "wrap", alignItems: "center" }}>
+                                <span>✅ {confirmed.length} bestätigt</span>
+                                <span>⏳ {open.length} offen</span>
+                                <button
+                                  type="button"
+                                  className="primary-button"
+                                  onClick={() => downloadSopConfirmationPdf(driver)}
+                                  disabled={adminSopPdfLoadingId === driver.id}
+                                >
+                                  {adminSopPdfLoadingId === driver.id ? "PDF wird erstellt..." : "📄 SOP-PDF"}
+                                </button>
+                              </div>
+                            </div>
+
+                            {open.length > 0 && (
+                              <div style={{ marginTop: "10px", padding: "10px", borderRadius: "10px", background: "rgba(245, 158, 11, 0.10)" }}>
+                                <strong>Offene SOPs:</strong>
+                                <ul style={{ margin: "6px 0 0 20px" }}>
+                                  {open.map((sop) => (
+                                    <li key={sop.id}>{sop.titel} – Version {sop.version}</li>
+                                  ))}
+                                </ul>
+                              </div>
+                            )}
+
+                            {confirmed.length > 0 && (
+                              <div style={{ marginTop: "10px" }}>
+                                <strong>Bestätigt:</strong>
+                                <ul style={{ margin: "6px 0 0 20px" }}>
+                                  {confirmed.map((sop) => {
+                                    const confirmation = adminSopConfirmations.find(
+                                      (item) =>
+                                        item.fahrer_id === driver.id &&
+                                        item.sop_id === sop.id &&
+                                        item.version === sop.version
+                                    )
+                                    return (
+                                      <li key={sop.id}>
+                                        {sop.titel} – Version {sop.version}
+                                        {" · "}
+                                        {confirmation?.bestaetigt_am
+                                          ? new Date(confirmation.bestaetigt_am).toLocaleString("de-DE")
+                                          : "Datum unbekannt"}
+                                      </li>
+                                    )
+                                  })}
+                                </ul>
+                              </div>
+                            )}
+                          </div>
+                        )
+                      })}
+                  </div>
+                )}
+              </div>
+
               <p style={{ marginTop: "18px", fontSize: "14px" }}>
                 Hinweis: Der eigene Admin-Account kann in dieser Ansicht nicht versehentlich auf eine andere Rolle gesetzt werden.
               </p>
             </div>
+          </section>
+        )}
+
+        {page === "sops" && (
+          <section>
+            <div className="card">
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: "12px", flexWrap: "wrap" }}>
+                <div>
+                  <h2>📚 SOP & Schulungen</h2>
+                  <p style={{ marginBottom: 0 }}>
+                    Aktive Arbeitsanweisungen und Schulungen. Bestätigungen werden pro SOP-Version gespeichert.
+                  </p>
+                </div>
+                <div style={{ display: "flex", gap: "8px", flexWrap: "wrap" }}>
+                  <button type="button" className="secondary-button" onClick={loadSops} disabled={sopLoading}>
+                    {sopLoading ? "Wird geladen..." : "↻ Aktualisieren"}
+                  </button>
+                  {canManageSops && (
+                    <button type="button" className="primary-button" onClick={openSopCreate}>
+                      ＋ SOP anlegen
+                    </button>
+                  )}
+                </div>
+              </div>
+            </div>
+
+            {sopError && <div className="card"><p className="warning">{sopError}</p></div>}
+
+            {canManageSops && sopFormOpen && (
+              <div className="card">
+                <h3>{sopEditingId ? "SOP bearbeiten" : "Neue SOP"}</h3>
+                <div style={{ display: "grid", gap: "12px" }}>
+                  <div>
+                    <label htmlFor="sop-title">Titel</label>
+                    <input id="sop-title" value={sopTitle} onChange={(e) => setSopTitle(e.target.value)} placeholder="z. B. Fahrzeugübernahme" />
+                  </div>
+                  <div>
+                    <label htmlFor="sop-description">Kurzbeschreibung</label>
+                    <input id="sop-description" value={sopDescription} onChange={(e) => setSopDescription(e.target.value)} placeholder="Worum geht es bei dieser SOP?" />
+                  </div>
+                  <div>
+                    <label htmlFor="sop-version">Version</label>
+                    <input id="sop-version" value={sopVersion} onChange={(e) => setSopVersion(e.target.value)} placeholder="1.0" />
+                  </div>
+                  <div>
+                    <label htmlFor="sop-content">Inhalt</label>
+                    <textarea id="sop-content" value={sopContent} onChange={(e) => setSopContent(e.target.value)} rows={12} placeholder="Arbeitsanweisung..." />
+                  </div>
+                  <div style={{ display: "flex", gap: "8px", flexWrap: "wrap" }}>
+                    <button type="button" className="secondary-button" onClick={resetSopForm} disabled={sopSaving}>Abbrechen</button>
+                    <button type="button" className="primary-button" onClick={saveSop} disabled={sopSaving}>
+                      {sopSaving ? "Wird gespeichert..." : "SOP speichern"}
+                    </button>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {sopLoading && <div className="card"><p>SOPs werden geladen...</p></div>}
+
+            {!sopLoading && sops.length === 0 && (
+              <div className="card"><p>Keine aktiven SOPs vorhanden.</p></div>
+            )}
+
+            {!sopLoading && sops.map((sop) => {
+              const confirmed = hasConfirmedSop(sop)
+              return (
+                <div className="card" key={sop.id} style={{ marginTop: "12px" }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: "12px", flexWrap: "wrap" }}>
+                    <div>
+                      <h3 style={{ marginBottom: "4px" }}>{sop.titel}</h3>
+                      <div style={{ fontSize: "14px", opacity: 0.75 }}>Version {sop.version}</div>
+                      {sop.beschreibung && <p>{sop.beschreibung}</p>}
+                    </div>
+                    <div style={{ fontWeight: 800 }}>
+                      {confirmed ? "✅ Bestätigt" : "⏳ Noch nicht bestätigt"}
+                    </div>
+                  </div>
+
+                  <div style={{ whiteSpace: "pre-wrap", lineHeight: 1.6, marginTop: "14px", padding: "14px", borderRadius: "10px", background: "rgba(0,0,0,0.035)" }}>
+                    {sop.inhalt}
+                  </div>
+
+                  <div style={{ display: "flex", gap: "8px", flexWrap: "wrap", marginTop: "14px" }}>
+                    {!confirmed && (
+                      <button
+                        type="button"
+                        className="primary-button"
+                        onClick={() => confirmSop(sop)}
+                        disabled={sopConfirmingId === sop.id}
+                      >
+                        {sopConfirmingId === sop.id ? "Wird bestätigt..." : "✓ SOP gelesen & verstanden"}
+                      </button>
+                    )}
+                    {canManageSops && (
+                      <>
+                        <button type="button" className="secondary-button" onClick={() => openSopEdit(sop)}>Bearbeiten</button>
+                        <button type="button" className="secondary-button" onClick={() => deactivateSop(sop.id)}>Deaktivieren</button>
+                      </>
+                    )}
+                  </div>
+
+                  {confirmed && (
+                    <p className="success" style={{ marginTop: "12px", marginBottom: 0 }}>
+                      Diese Version wurde von dir am {sopConfirmations.find((item) => item.sop_id === sop.id && item.version === sop.version)?.bestaetigt_am
+                        ? new Date(sopConfirmations.find((item) => item.sop_id === sop.id && item.version === sop.version)!.bestaetigt_am!).toLocaleString("de-DE")
+                        : "bereits bestätigt"} bestätigt.
+                    </p>
+                  )}
+                </div>
+              )
+            })}
           </section>
         )}
 
