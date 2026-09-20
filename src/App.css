@@ -1318,3 +1318,188 @@ section:has(.dashboard-grid) > .card:nth-child(3) .primary-button:hover {
   color: #344054;
   font-weight: 600;
 }
+
+/* =====================================================
+   TRANSPORTAPP – MENÜ POLISH
+   Nur Design – keine Funktionsänderung
+===================================================== */
+
+.menu-toggle {
+  transition:
+    background 0.2s ease,
+    box-shadow 0.2s ease,
+    transform 0.15s ease;
+}
+
+.menu-toggle:hover {
+  background: #f8fafc;
+  box-shadow: 0 6px 18px rgba(16, 24, 40, 0.14);
+}
+
+.menu-toggle:active {
+  transform: scale(0.97);
+}
+
+/* Menü-Kopfbereich */
+.navigation-title {
+  min-height: 48px;
+  font-size: 17px;
+  letter-spacing: -0.02em;
+}
+
+/* Menü-Schließen-Button */
+.navigation-close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  transition:
+    background 0.2s ease,
+    transform 0.15s ease;
+}
+
+.navigation-close:hover {
+  background: #e9eef5;
+  transform: rotate(3deg);
+}
+
+.navigation-close:active {
+  transform: scale(0.94);
+}
+
+/* Menüpunkte */
+.navigation .nav {
+  position: relative;
+  min-height: 46px;
+  padding: 11px 13px;
+  border-radius: 10px;
+  font-size: 14px;
+  font-weight: 600;
+  transition:
+    background 0.18s ease,
+    color 0.18s ease,
+    transform 0.15s ease;
+}
+
+.navigation .nav:hover {
+  background: #f1f5f9;
+  color: #0f172a;
+  transform: translateX(2px);
+}
+
+.navigation .nav.active {
+  background: #e8eef7 !important;
+  color: #1d4ed8 !important;
+  border-color: #cbdaf0 !important;
+  font-weight: 750;
+}
+
+/* Linker Akzent beim aktiven Menüpunkt */
+.navigation .nav.active::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 9px;
+  bottom: 9px;
+  width: 3px;
+  border-radius: 999px;
+  background: #2563eb;
+}
+
+/* Hintergrund beim geöffneten Menü */
+.menu-backdrop {
+  animation: menuBackdropIn 0.2s ease-out;
+}
+
+@keyframes menuBackdropIn {
+  from {
+    opacity: 0;
+  }
+
+  to {
+    opacity: 1;
+  }
+}
+
+/* Desktop: etwas mehr Abstand zum Menü */
+@media (min-width: 901px) {
+  .navigation {
+    padding: 18px 14px;
+  }
+
+  .navigation .nav {
+    min-height: 45px;
+  }
+}
+
+/* Smartphone */
+@media (max-width: 600px) {
+  .navigation .nav {
+    min-height: 48px;
+    padding: 12px 13px;
+  }
+
+  .navigation-title {
+    padding-bottom: 14px;
+  }
+}
+
+/* Bewegungen reduzieren, wenn Nutzer dies im System aktiviert hat */
+@media (prefers-reduced-motion: reduce) {
+  .menu-toggle,
+  .navigation,
+  .navigation .nav,
+  .navigation-close,
+  .menu-backdrop {
+    transition: none !important;
+    animation: none !important;
+  }
+}/* =========================================
+   AUFKLAPPBARE NAVIGATION
+   ========================================= */
+
+.navigation-section-toggle {
+  display: flex !important;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  min-height: 44px;
+  padding: 10px 14px;
+  margin: 8px 0 4px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-weight: 700;
+  text-align: left;
+  cursor: pointer;
+  pointer-events: auto !important;
+  user-select: none;
+  transition: background-color 0.2s ease;
+}
+
+.navigation-section-toggle:hover {
+  background-color: rgba(100, 116, 139, 0.12);
+}
+
+.navigation-section-toggle:focus-visible {
+  outline: 3px solid #2563eb;
+  outline-offset: 2px;
+}
+
+.navigation-submenu {
+  display: none;
+  width: 100%;
+  overflow: hidden;
+}
+
+.navigation-submenu.open {
+  display: block;
+}
+
+.navigation-submenu .nav {
+  display: flex;
+  width: 100%;
+  cursor: pointer;
+  pointer-events: auto !important;
+}

@@ -90,7 +90,9 @@ type Delivery = {
   rating?: number
   complaint?: boolean
   note?: string
+  driverNote?: string
   kundeId?: number | null
+  customerAmount?: number | null
 }
 
 type NewDelivery = {
@@ -98,12 +100,20 @@ type NewDelivery = {
   address: string
   plannedTime: string
   kundeId?: number | null
+  customerAmount: string
+  note: string
 }
 
 type Customer = {
   id: number
   name: string
   adresse: string | null
+  notiz: string | null
+  rechnungName: string | null
+  rechnungAdresse: string | null
+  rechnungSteuerId: string | null
+  rechnungZahlungsziel: number | null
+  rechnungBankverbindung: string | null
   aktiv: boolean
   erstellt_am?: string | null
   geaendert_am?: string | null
@@ -124,6 +134,16 @@ type CustomerComplaint = {
   beschreibung: string
   status: string
   erstellt_am: string | null
+}
+
+type TourDocumentRecord = {
+  id: number
+  tour_id: number
+  lieferung_id: number
+  dokumenttyp: "Frachtbrief" | "Tankbeleg"
+  dateiname: string
+  speicherpfad: string
+  erstellt_am?: string | null
 }
 
 type Defect = {
@@ -465,10 +485,6 @@ function getDeliveryAction(delivery: Delivery): string {
   }
 
   if (delivery.status === "Beim Kunden") {
-    if (!delivery.deliveredTime) {
-      return "Nächster Schritt: Lieferung als angeliefert erfassen"
-    }
-
     if (!delivery.departureTime) {
       return "Nächster Schritt: Abfahrt vom Kunden erfassen"
     }
@@ -524,9 +540,8 @@ function getTourTrafficLight(
 }
 
 function getDeliveryStep(delivery: Delivery): number {
-  if (delivery.status === "Erledigt") return 5
-  if (delivery.status === "Beim Kunden" && delivery.departureTime) return 4
-  if (delivery.status === "Beim Kunden" && delivery.deliveredTime) return 3
+  if (delivery.status === "Erledigt") return 4
+  if (delivery.status === "Beim Kunden" && delivery.departureTime) return 3
   if (delivery.status === "Beim Kunden") return 2
   if (delivery.status === "Unterwegs") return 1
   return 0
@@ -575,6 +590,19 @@ type DispatcherDeliveryStats = {
 
 function App() {
   const [menuOpen, setMenuOpen] = useState(false)
+      const [expandedMenuSections, setExpandedMenuSections] = useState<Record<string, boolean>>({
+        arbeitsalltag: true,
+        verwaltung: false,
+        auswertung: false,
+        einstellungen: false,
+      });
+
+      const toggleMenuSection = (section: string) => {
+        setExpandedMenuSections((previous) => ({
+          ...previous,
+          [section]: !previous[section],
+        }));
+      };
 
   const [page, setPage] = useState<
     | "dashboard"
@@ -637,8 +665,10 @@ function App() {
   const [sopContent, setSopContent] = useState("")
   const [sopVersion, setSopVersion] = useState("1.0")
 
-  const isAdmin = currentUser?.rolle === "Admin"
-  const canManageSops = isAdmin || currentUser?.rolle === "Disponent"
+  const normalizedRole = String(currentUser?.rolle || "").trim().toLowerCase()
+  const isAdmin = normalizedRole === "admin" || normalizedRole === "administrator"
+  const isDisponent = normalizedRole === "disponent" || normalizedRole === "dispatcher"
+  const canManageSops = isAdmin || isDisponent
 
   function hasPermission(permission: PermissionKey): boolean {
     if (isAdmin) return true
@@ -652,6 +682,11 @@ function App() {
     hasPermission("fahrer") ||
     hasPermission("warnungen") ||
     hasPermission("auswertungen")
+
+  // Fahrer dürfen ihre eigene Auswertung sehen. Änderungen an Schichten
+  // sind ausschließlich für Admin und Disponent vorgesehen.
+  const canViewReports = currentUser?.rolle === "Fahrer" || hasPermission("auswertungen")
+  const canEditShiftCorrections = isAdmin || isDisponent || hasPermission("auswertungen")
 
   useEffect(() => {
     let mounted = true
@@ -1669,7 +1704,65 @@ function App() {
 
   const [tourKmStart, setTourKmStart] = useState("")
   const [tourKmEnd, setTourKmEnd] = useState("")
+  const [invoiceCompanyName, setInvoiceCompanyName] = useState("")
+  const [invoiceCompanyAddress, setInvoiceCompanyAddress] = useState("")
+  const [invoiceCompanyTaxId, setInvoiceCompanyTaxId] = useState("")
+  const [invoicePaymentDays, setInvoicePaymentDays] = useState("14")
+  const [invoiceBankDetails, setInvoiceBankDetails] = useState("")
+  const [invoiceSettingsLoaded, setInvoiceSettingsLoaded] = useState(false)
   const [driverStats, setDriverStats] = useState<Record<string, DriverTourStats>>({})
+
+  // Eigene Firmendaten einmal laden und danach automatisch im Browser speichern.
+  useEffect(() => {
+    try {
+      const savedInvoiceSettings = window.localStorage.getItem("transportapp_invoice_company")
+      if (savedInvoiceSettings) {
+        const saved = JSON.parse(savedInvoiceSettings) as {
+          companyName?: string
+          companyAddress?: string
+          taxId?: string
+          paymentDays?: string
+          bankDetails?: string
+        }
+
+        setInvoiceCompanyName(saved.companyName || "")
+        setInvoiceCompanyAddress(saved.companyAddress || "")
+        setInvoiceCompanyTaxId(saved.taxId || "")
+        setInvoicePaymentDays(saved.paymentDays || "14")
+        setInvoiceBankDetails(saved.bankDetails || "")
+      }
+    } catch (error) {
+      console.warn("Eigene Rechnungsdaten konnten nicht geladen werden:", error)
+    } finally {
+      setInvoiceSettingsLoaded(true)
+    }
+  }, [])
+
+  useEffect(() => {
+    if (!invoiceSettingsLoaded) return
+
+    try {
+      window.localStorage.setItem(
+        "transportapp_invoice_company",
+        JSON.stringify({
+          companyName: invoiceCompanyName,
+          companyAddress: invoiceCompanyAddress,
+          taxId: invoiceCompanyTaxId,
+          paymentDays: invoicePaymentDays,
+          bankDetails: invoiceBankDetails,
+        }),
+      )
+    } catch (error) {
+      console.warn("Eigene Rechnungsdaten konnten nicht gespeichert werden:", error)
+    }
+  }, [
+    invoiceSettingsLoaded,
+    invoiceCompanyName,
+    invoiceCompanyAddress,
+    invoiceCompanyTaxId,
+    invoicePaymentDays,
+    invoiceBankDetails,
+  ])
   const [reportStart, setReportStart] = useState(() => {
     const now = new Date()
     return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-01`
@@ -1688,6 +1781,13 @@ function App() {
     workMinutes: 0,
   })
   const [reportTourRows, setReportTourRows] = useState<any[]>([])
+  const [reportShiftRows, setReportShiftRows] = useState<any[]>([])
+  const [reportWorkRows, setReportWorkRows] = useState<any[]>([])
+  const [editingShiftId, setEditingShiftId] = useState<number | null>(null)
+  const [editingShiftStart, setEditingShiftStart] = useState("")
+  const [editingShiftEnd, setEditingShiftEnd] = useState("")
+  const [editingShiftKm, setEditingShiftKm] = useState("")
+  const [shiftEditMessage, setShiftEditMessage] = useState("")
   const [documentRows, setDocumentRows] = useState<DocumentRecord[]>([])
   const [documentLoading, setDocumentLoading] = useState(false)
   const [documentError, setDocumentError] = useState("")
@@ -1700,6 +1800,9 @@ function App() {
   const [documentFile, setDocumentFile] = useState<File | null>(null)
   const [documentUploading, setDocumentUploading] = useState(false)
   const [documentFilter, setDocumentFilter] = useState("Alle")
+  const [deliveryUploading, setDeliveryUploading] = useState<number | null>(null)
+  const [deliveryDocumentMessage, setDeliveryDocumentMessage] = useState<Record<number, string>>({})
+  const [deliveryDocuments, setDeliveryDocuments] = useState<Record<number, TourDocumentRecord[]>>({})
   const [centralWarnings, setCentralWarnings] = useState<Array<{
     id: string
     priority: "dringend" | "wichtig" | "hinweis"
@@ -2226,6 +2329,12 @@ function App() {
   const [customerSearch, setCustomerSearch] = useState("")
   const [customerFormName, setCustomerFormName] = useState("")
   const [customerFormAddress, setCustomerFormAddress] = useState("")
+  const [customerFormNote, setCustomerFormNote] = useState("")
+  const [customerFormInvoiceName, setCustomerFormInvoiceName] = useState("")
+  const [customerFormInvoiceAddress, setCustomerFormInvoiceAddress] = useState("")
+  const [customerFormInvoiceTaxId, setCustomerFormInvoiceTaxId] = useState("")
+  const [customerFormInvoicePaymentDays, setCustomerFormInvoicePaymentDays] = useState("14")
+  const [customerFormInvoiceBankDetails, setCustomerFormInvoiceBankDetails] = useState("")
   const [customerEditingId, setCustomerEditingId] = useState<number | null>(null)
   const [customerFormMessage, setCustomerFormMessage] = useState("")
   const [customerHintText, setCustomerHintText] = useState("")
@@ -2237,8 +2346,8 @@ function App() {
     const [customersResult, hintsResult, complaintsResult] = await Promise.all([
       supabase
         .from("kunden")
-        .select("id, name, adresse, aktiv, erstellt_am, geaendert_am")
-        .order("name", { ascending: true }),
+        .select("id, kundenname, strasse, hausnummer, plz, ort, allgemeine_notiz, rechnung_name, rechnung_adresse, rechnung_steuer_id, rechnung_zahlungsziel, rechnung_bankverbindung")
+        .order("kundenname", { ascending: true }),
       supabase
         .from("kunden_hinweise")
         .select("id, kunde_id, hinweis, wichtig, aktiv")
@@ -2255,14 +2364,29 @@ function App() {
       console.error("Fehler beim Laden der Kunden:", customersResult.error)
       setCustomerFormMessage("Kunden konnten nicht geladen werden: " + customersResult.error.message)
     } else {
-      setCustomers((customersResult.data || []).map((row: any) => ({
-        id: Number(row.id),
-        name: String(row.name || ""),
-        adresse: row.adresse != null ? String(row.adresse) : null,
-        aktiv: row.aktiv !== false,
-        erstellt_am: row.erstellt_am || null,
-        geaendert_am: row.geaendert_am || null,
-      })))
+      setCustomers((customersResult.data || []).map((row: any) => {
+        const addressParts = [
+          row.strasse,
+          row.hausnummer,
+          row.plz,
+          row.ort,
+        ].filter((part) => part != null && String(part).trim() !== "")
+
+        return {
+          id: Number(row.id),
+          name: String(row.kundenname || ""),
+          adresse: addressParts.length > 0 ? addressParts.map((part) => String(part).trim()).join(" ") : null,
+          notiz: row.allgemeine_notiz != null ? String(row.allgemeine_notiz) : null,
+          rechnungName: row.rechnung_name != null ? String(row.rechnung_name) : null,
+          rechnungAdresse: row.rechnung_adresse != null ? String(row.rechnung_adresse) : null,
+          rechnungSteuerId: row.rechnung_steuer_id != null ? String(row.rechnung_steuer_id) : null,
+          rechnungZahlungsziel: row.rechnung_zahlungsziel != null ? Number(row.rechnung_zahlungsziel) : null,
+          rechnungBankverbindung: row.rechnung_bankverbindung != null ? String(row.rechnung_bankverbindung) : null,
+          aktiv: true,
+          erstellt_am: null,
+          geaendert_am: null,
+        }
+      }))
     }
 
     if (!hintsResult.error) {
@@ -2293,6 +2417,12 @@ function App() {
     setCustomerEditingId(null)
     setCustomerFormName("")
     setCustomerFormAddress("")
+    setCustomerFormNote("")
+    setCustomerFormInvoiceName("")
+    setCustomerFormInvoiceAddress("")
+    setCustomerFormInvoiceTaxId("")
+    setCustomerFormInvoicePaymentDays("14")
+    setCustomerFormInvoiceBankDetails("")
     setCustomerFormMessage("")
     setCustomerHintText("")
   }
@@ -2301,6 +2431,12 @@ function App() {
     setCustomerEditingId(customer.id)
     setCustomerFormName(customer.name)
     setCustomerFormAddress(customer.adresse || "")
+    setCustomerFormNote(customer.notiz || "")
+    setCustomerFormInvoiceName(customer.rechnungName || "")
+    setCustomerFormInvoiceAddress(customer.rechnungAdresse || "")
+    setCustomerFormInvoiceTaxId(customer.rechnungSteuerId || "")
+    setCustomerFormInvoicePaymentDays(customer.rechnungZahlungsziel != null ? String(customer.rechnungZahlungsziel) : "14")
+    setCustomerFormInvoiceBankDetails(customer.rechnungBankverbindung || "")
     setCustomerFormMessage("")
     setCustomerHintText("")
     window.scrollTo({ top: 0, behavior: "smooth" })
@@ -2328,9 +2464,14 @@ function App() {
     setCustomerFormMessage("")
 
     const payload = {
-      name,
-      adresse: address || null,
-      geaendert_am: new Date().toISOString(),
+      kundenname: name,
+      strasse: address || null,
+      allgemeine_notiz: customerFormNote.trim() || null,
+      rechnung_name: customerFormInvoiceName.trim() || null,
+      rechnung_adresse: customerFormInvoiceAddress.trim() || null,
+      rechnung_steuer_id: customerFormInvoiceTaxId.trim() || null,
+      rechnung_zahlungsziel: customerFormInvoicePaymentDays.trim() === "" ? 14 : Math.max(0, Number(customerFormInvoicePaymentDays) || 0),
+      rechnung_bankverbindung: customerFormInvoiceBankDetails.trim() || null,
     }
 
     const result = customerEditingId
@@ -2354,7 +2495,7 @@ function App() {
     const nextActive = !customer.aktiv
     const { error } = await supabase
       .from("kunden")
-      .update({ aktiv: nextActive, geaendert_am: new Date().toISOString() })
+      .update({ aktiv: nextActive })
       .eq("id", customer.id)
 
     if (error) {
@@ -2413,6 +2554,7 @@ function App() {
               customer: value,
               address: customer?.adresse || (customer ? "" : delivery.address),
               kundeId: customer?.id || null,
+              note: customer?.notiz || "",
             }
           : delivery
       )
@@ -2871,7 +3013,9 @@ function App() {
           puenktlichkeit,
           bewertung,
           beschwerde,
-          notiz
+          notiz,
+          fahrernotiz,
+          kundenbetrag
         `
       )
       .eq("tour_id", tourId)
@@ -2929,8 +3073,14 @@ function App() {
           row.beschwerde || false,
         note:
           row.notiz || undefined,
+        driverNote:
+          row.fahrernotiz || undefined,
         kundeId:
           row.kunde_id != null ? Number(row.kunde_id) : null,
+        customerAmount:
+          currentUser?.rolle === "Fahrer" || row.kundenbetrag == null
+            ? null
+            : Number(row.kundenbetrag),
       }))
 
     // Lieferungen zuerst nach manueller Reihenfolge sortieren.
@@ -2949,6 +3099,30 @@ function App() {
     setDeliveries(
       loadedDeliveries
     )
+
+    const { data: tourDocumentRows, error: tourDocumentError } = await supabase
+      .from("tour_dokumente")
+      .select("id, tour_id, lieferung_id, dokumenttyp, dateiname, speicherpfad, erstellt_am")
+      .eq("tour_id", tourId)
+      .order("erstellt_am", { ascending: false })
+
+    if (!tourDocumentError) {
+      const groupedDocuments: Record<number, TourDocumentRecord[]> = {}
+      ;(tourDocumentRows || []).forEach((row: any) => {
+        const deliveryId = Number(row.lieferung_id)
+        if (!groupedDocuments[deliveryId]) groupedDocuments[deliveryId] = []
+        groupedDocuments[deliveryId].push({
+          id: Number(row.id),
+          tour_id: Number(row.tour_id),
+          lieferung_id: deliveryId,
+          dokumenttyp: row.dokumenttyp,
+          dateiname: String(row.dateiname || ""),
+          speicherpfad: String(row.speicherpfad || ""),
+          erstellt_am: row.erstellt_am || null,
+        })
+      })
+      setDeliveryDocuments(groupedDocuments)
+    }
   }
 
   // =====================================================
@@ -3377,17 +3551,19 @@ function App() {
   }, [session, currentUser?.id, currentUser?.rolle])
 
   useEffect(() => {
-    if (!session || !currentUser || currentUser.rolle !== "Fahrer") return
+    // Einstechen/Ausstechen steht allen Rollen offen (Fahrer, Admin, Disponent) –
+    // nur Fahrer sind zusätzlich an ein Fahrzeug gebunden.
+    if (!session || !currentUser) return
     loadDriverShift()
   }, [session, currentUser?.id, currentUser?.rolle])
 
   useEffect(() => {
-    if (currentUser?.rolle !== "Fahrer" || page !== "dashboard") return
+    if (!currentUser || page !== "dashboard") return
     loadDriverShift()
   }, [page])
 
   useEffect(() => {
-    if (!driverShift || currentUser?.rolle !== "Fahrer") return
+    if (!driverShift) return
     const currentSegment = [...driverShiftSegments].reverse().find((item) => !item.endzeit)
     if (currentSegment) {
       setShiftVehicleId(String(currentSegment.fahrzeug_id))
@@ -3404,7 +3580,7 @@ function App() {
     const { data, error } = await supabase
       .from("benutzer")
       .select("id,email,name,rolle,aktiv,freigabestatus,telefon,fuehrerscheinnummer,fuehrerschein_gueltig_bis")
-      .eq("rolle", "Fahrer")
+      .in("rolle", ["Fahrer", "Disponent", "Admin"])
       .order("name")
     if (error) {
       setDriverProfileError(error.message)
@@ -3414,7 +3590,7 @@ function App() {
         id: String(row.id),
         email: String(row.email || ""),
         name: String(row.name || ""),
-        rolle: "Fahrer",
+        rolle: row.rolle as UserRole,
         aktiv: Boolean(row.aktiv),
         freigabestatus:
           row.freigabestatus === "Freigegeben"
@@ -3462,7 +3638,8 @@ function App() {
   }
 
   async function loadDriverShift() {
-    if (!currentUser?.id || currentUser.rolle !== "Fahrer") return
+    // Fahrer, Admin und Disponent können alle ein-/ausstechen.
+    if (!currentUser?.id) return
 
     setDriverShiftLoading(true)
     setDriverShiftMessage("")
@@ -3540,32 +3717,41 @@ function App() {
   }
 
   async function startDriverShift() {
-    if (!currentUser?.id || currentUser.rolle !== "Fahrer") return
+    if (!currentUser?.id) return
     if (driverShift) {
       setDriverShiftMessage("Es läuft bereits eine Schicht.")
       return
     }
 
-    const vehicleId = Number(shiftVehicleId)
-    const startKm = parseKmInput(shiftKm)
-    const selectedVehicle = getShiftVehicle(vehicleId)
+    // Nur Fahrer sind an ein Fahrzeug gebunden. Admin und Disponent sind
+    // lediglich im Betrieb tätig und stechen ohne Fahrzeugauswahl ein/aus.
+    const requiresVehicle = currentUser.rolle === "Fahrer"
 
-    if (!selectedVehicle) {
-      setDriverShiftMessage("Bitte ein Fahrzeug auswählen.")
-      return
-    }
+    let vehicleId: number | null = null
+    let startKm: number | null = null
 
-    if (startKm == null || startKm < 0) {
-      setDriverShiftMessage("Bitte einen gültigen Start-Kilometerstand eingeben.")
-      return
-    }
+    if (requiresVehicle) {
+      vehicleId = Number(shiftVehicleId)
+      startKm = parseKmInput(shiftKm)
+      const selectedVehicle = getShiftVehicle(vehicleId)
 
-    const knownKm = Number(selectedVehicle.kilometerstand || 0)
-    if (startKm < knownKm) {
-      setDriverShiftMessage(
-        `Der Start-Kilometerstand darf nicht kleiner als der aktuelle Fahrzeugstand (${knownKm.toLocaleString("de-DE")} km) sein.`
-      )
-      return
+      if (!selectedVehicle) {
+        setDriverShiftMessage("Bitte ein Fahrzeug auswählen.")
+        return
+      }
+
+      if (startKm == null || startKm < 0) {
+        setDriverShiftMessage("Bitte einen gültigen Start-Kilometerstand eingeben.")
+        return
+      }
+
+      const knownKm = Number(selectedVehicle.kilometerstand || 0)
+      if (startKm < knownKm) {
+        setDriverShiftMessage(
+          `Der Start-Kilometerstand darf nicht kleiner als der aktuelle Fahrzeugstand (${knownKm.toLocaleString("de-DE")} km) sein.`
+        )
+        return
+      }
     }
 
     setDriverShiftSaving(true)
@@ -3587,6 +3773,15 @@ function App() {
       return
     }
 
+    // Admin/Disponent: reine Arbeitszeiterfassung, kein Fahrzeugabschnitt nötig.
+    if (!requiresVehicle) {
+      setDriverShift(shift as DriverShift)
+      setDriverShiftSegments([])
+      setShiftEndKm("")
+      setDriverShiftSaving(false)
+      return
+    }
+
     const { error: segmentError } = await supabase
       .from("schicht_fahrzeuge")
       .insert({
@@ -3603,7 +3798,7 @@ function App() {
     }
 
     try {
-      await updateVehicleKilometerstand(vehicleId, startKm)
+      await updateVehicleKilometerstand(vehicleId as number, startKm as number)
     } catch (error) {
       await supabase.from("schicht_fahrzeuge").delete().eq("schicht_id", shift.id)
       await supabase.from("schichten").delete().eq("id", shift.id)
@@ -3616,10 +3811,10 @@ function App() {
     setDriverShiftSegments([{
       id: 0,
       schicht_id: Number(shift.id),
-      fahrzeug_id: vehicleId,
+      fahrzeug_id: vehicleId as number,
       startzeit: String(shift.startzeit),
       endzeit: null,
-      start_km: startKm,
+      start_km: startKm as number,
       end_km: null,
       gefahrene_km: null,
     }])
@@ -3632,7 +3827,8 @@ function App() {
   }
 
   async function changeDriverShiftVehicle() {
-    if (!driverShift || !currentUser?.id) return
+    // Fahrzeugwechsel betrifft nur Fahrer – Admin/Disponent haben keine Fahrzeugabschnitte.
+    if (!driverShift || !currentUser?.id || currentUser.rolle !== "Fahrer") return
 
     const currentSegment = [...driverShiftSegments].reverse().find((item) => !item.endzeit)
     if (!currentSegment) {
@@ -3755,62 +3951,80 @@ function App() {
     if (!driverShift || !currentUser?.id) return
 
     const currentSegment = [...driverShiftSegments].reverse().find((item) => !item.endzeit)
-    if (!currentSegment) {
-      setDriverShiftMessage("Es wurde kein aktives Fahrzeug gefunden.")
-      return
-    }
-
-    const endKm = parseKmInput(shiftEndKm)
-    if (endKm == null || endKm < currentSegment.start_km) {
-      setDriverShiftMessage("Der End-Kilometerstand muss gültig und mindestens so hoch wie der Startstand sein.")
-      return
-    }
 
     setDriverShiftSaving(true)
     setDriverShiftMessage("")
 
-    const drivenKm = endKm - currentSegment.start_km
-    const totalKm = Number(driverShift.gesamt_km || 0) + drivenKm
+    // Fall 1: Fahrer mit aktivem Fahrzeugabschnitt – Kilometer erfassen und Abschnitt schließen.
+    if (currentSegment) {
+      const endKm = parseKmInput(shiftEndKm)
+      if (endKm == null || endKm < currentSegment.start_km) {
+        setDriverShiftMessage("Der End-Kilometerstand muss gültig und mindestens so hoch wie der Startstand sein.")
+        setDriverShiftSaving(false)
+        return
+      }
 
-    const { error: segmentError } = await supabase
-      .from("schicht_fahrzeuge")
-      .update({
-        endzeit: new Date().toISOString(),
-        end_km: endKm,
-        gefahrene_km: drivenKm,
-      })
-      .eq("id", currentSegment.id)
+      const drivenKm = endKm - currentSegment.start_km
+      const totalKm = Number(driverShift.gesamt_km || 0) + drivenKm
 
-    if (segmentError) {
-      setDriverShiftMessage("Der Fahrzeugabschnitt konnte nicht beendet werden: " + segmentError.message)
-      setDriverShiftSaving(false)
-      return
+      const { error: segmentError } = await supabase
+        .from("schicht_fahrzeuge")
+        .update({
+          endzeit: new Date().toISOString(),
+          end_km: endKm,
+          gefahrene_km: drivenKm,
+        })
+        .eq("id", currentSegment.id)
+
+      if (segmentError) {
+        setDriverShiftMessage("Der Fahrzeugabschnitt konnte nicht beendet werden: " + segmentError.message)
+        setDriverShiftSaving(false)
+        return
+      }
+
+      try {
+        await updateVehicleKilometerstand(currentSegment.fahrzeug_id, endKm)
+      } catch (error) {
+        setDriverShiftMessage("Der Fahrzeugkilometerstand konnte nicht aktualisiert werden: " + (error instanceof Error ? error.message : String(error)))
+        setDriverShiftSaving(false)
+        return
+      }
+
+      const { error: shiftError } = await supabase
+        .from("schichten")
+        .update({
+          endzeit: new Date().toISOString(),
+          status: "Abgeschlossen",
+          gesamt_km: totalKm,
+        })
+        .eq("id", driverShift.id)
+
+      if (shiftError) {
+        setDriverShiftMessage("Die Schicht konnte nicht abgeschlossen werden: " + shiftError.message)
+        setDriverShiftSaving(false)
+        return
+      }
+
+      setDriverShiftMessage(`Schicht beendet. Heute gefahren: ${totalKm.toLocaleString("de-DE")} km.`)
+    } else {
+      // Fall 2: Admin/Disponent ohne Fahrzeugabschnitt – nur die Arbeitszeit wird beendet.
+      const { error: shiftError } = await supabase
+        .from("schichten")
+        .update({
+          endzeit: new Date().toISOString(),
+          status: "Abgeschlossen",
+        })
+        .eq("id", driverShift.id)
+
+      if (shiftError) {
+        setDriverShiftMessage("Die Schicht konnte nicht abgeschlossen werden: " + shiftError.message)
+        setDriverShiftSaving(false)
+        return
+      }
+
+      setDriverShiftMessage(`Schicht beendet. Arbeitszeit: ${formatShiftDuration(driverShift.startzeit)}.`)
     }
 
-    try {
-      await updateVehicleKilometerstand(currentSegment.fahrzeug_id, endKm)
-    } catch (error) {
-      setDriverShiftMessage("Der Fahrzeugkilometerstand konnte nicht aktualisiert werden: " + (error instanceof Error ? error.message : String(error)))
-      setDriverShiftSaving(false)
-      return
-    }
-
-    const { error: shiftError } = await supabase
-      .from("schichten")
-      .update({
-        endzeit: new Date().toISOString(),
-        status: "Abgeschlossen",
-        gesamt_km: totalKm,
-      })
-      .eq("id", driverShift.id)
-
-    if (shiftError) {
-      setDriverShiftMessage("Die Schicht konnte nicht abgeschlossen werden: " + shiftError.message)
-      setDriverShiftSaving(false)
-      return
-    }
-
-    setDriverShiftMessage(`Schicht beendet. Heute gefahren: ${totalKm.toLocaleString("de-DE")} km.`)
     setDriverShift(null)
     setDriverShiftSegments([])
     setShiftEndKm("")
@@ -3946,6 +4160,23 @@ function App() {
       return
     }
 
+    // Ein-/Ausstech-Schichten ebenfalls in die Auswertung übernehmen.
+    // Die Schichten werden über den Startzeitpunkt dem ausgewählten Zeitraum zugeordnet.
+    let shiftQuery = supabase
+      .from("schichten")
+      .select("id,fahrer_id,startzeit,endzeit,status,gesamt_km,notiz")
+      .gte("startzeit", `${reportStart}T00:00:00`)
+      .lte("startzeit", `${reportEnd}T23:59:59`)
+
+    if (driverId) shiftQuery = shiftQuery.eq("fahrer_id", driverId)
+
+    const { data: shiftRows, error: shiftError } = await shiftQuery.order("startzeit", { ascending: false })
+    if (shiftError) {
+      setReportError(shiftError.message)
+      setReportLoading(false)
+      return
+    }
+
     const tours = tourRows || []
     const deliveries = deliveryRows || []
     const completedTours = tours.filter((t: any) => {
@@ -3962,16 +4193,33 @@ function App() {
     }, 0)
     const completedDeliveries = deliveries.filter((d: any) => String(d.status || "").toLowerCase() === "erledigt").length
     const delayedDeliveries = deliveries.filter((d: any) => String(d.puenktlichkeit || "").toLowerCase().includes("verspätet")).length
-    const workMinutesTotal = (workRows || []).reduce((sum: number, row: any) => sum + workMinutes(row as WorkEntry), 0)
+    const manualWorkMinutes = (workRows || []).reduce((sum: number, row: any) => sum + workMinutes(row as WorkEntry), 0)
+    const shiftWorkMinutes = (shiftRows || []).reduce((sum: number, row: any) => {
+      if (!row.startzeit || !row.endzeit) return sum
+      const start = new Date(row.startzeit).getTime()
+      const end = new Date(row.endzeit).getTime()
+      if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start) return sum
+      return sum + Math.floor((end - start) / 60000)
+    }, 0)
+    const shiftKilometers = (shiftRows || []).reduce((sum: number, row: any) => {
+      const km = Number(row.gesamt_km)
+      return Number.isFinite(km) && km > 0 ? sum + km : sum
+    }, 0)
+
+    // Schichtdaten ergänzen die manuell erfassten Arbeitszeiten und Tourkilometer.
+    const kilometersTotal = kilometers + shiftKilometers
+    const workMinutesTotal = manualWorkMinutes + shiftWorkMinutes
 
     setReportTourRows(tours)
+    setReportShiftRows(shiftRows || [])
+    setReportWorkRows(workRows || [])
     setReportStats({
       tours: tours.length,
       completedTours,
       deliveries: deliveries.length,
       completedDeliveries,
       delayedDeliveries,
-      kilometers,
+      kilometers: kilometersTotal,
       workMinutes: workMinutesTotal,
     })
     setReportLoading(false)
@@ -3983,9 +4231,9 @@ function App() {
     }
     if (reportDriverId) {
       const driver = driverProfiles.find((item) => item.id === reportDriverId)
-      return driver?.name || driver?.email || "Ausgewählter Fahrer"
+      return driver?.name || driver?.email || "Ausgewählter Mitarbeiter"
     }
-    return "Alle Fahrer"
+    return "Alle Mitarbeiter"
   }
 
   function reportFileBaseName(): string {
@@ -3995,6 +4243,147 @@ function App() {
   function escapeCsv(value: unknown): string {
     const text = String(value ?? "")
     return `"${text.replace(/"/g, '""')}"`
+  }
+
+  function toDateTimeLocalValue(value: string | null | undefined): string {
+    if (!value) return ""
+    const date = new Date(value)
+    if (Number.isNaN(date.getTime())) return ""
+    const pad = (part: number) => String(part).padStart(2, "0")
+    return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`
+  }
+
+  async function saveShiftCorrection(row: any) {
+    if (!canEditShiftCorrections) {
+      setShiftEditMessage("Nur Admin und Disponent dürfen Arbeitszeiten korrigieren.")
+      return
+    }
+    const startValue = editingShiftId === row?.id ? editingShiftStart : toDateTimeLocalValue(row?.startzeit)
+    const endValue = editingShiftId === row?.id ? editingShiftEnd : toDateTimeLocalValue(row?.endzeit)
+    const kmValue = editingShiftId === row?.id ? editingShiftKm : String(row?.gesamt_km ?? 0)
+
+    if (!row?.id || !startValue || !endValue) {
+      setShiftEditMessage("Bitte Einstech- und Ausstechzeit eintragen.")
+      return
+    }
+    const start = new Date(startValue).getTime()
+    const end = new Date(endValue).getTime()
+    if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start) {
+      setShiftEditMessage("Die Ausstechzeit muss nach der Einstechzeit liegen.")
+      return
+    }
+    const km = kmValue.trim() === "" ? Number(row.gesamt_km || 0) : Number(kmValue)
+    if (!Number.isFinite(km) || km < 0) {
+      setShiftEditMessage("Bitte eine gültige Kilometerzahl eingeben.")
+      return
+    }
+    const startIso = new Date(startValue).toISOString()
+    const endIso = new Date(endValue).toISOString()
+    const { error } = await supabase
+      .from("schichten")
+      .update({ startzeit: startIso, endzeit: endIso, status: "Abgeschlossen", gesamt_km: km })
+      .eq("id", row.id)
+    if (error) {
+      setShiftEditMessage("Schicht konnte nicht korrigiert werden: " + error.message)
+      return
+    }
+    setReportShiftRows((rows) => rows.map((item) => item.id === row.id
+      ? { ...item, startzeit: startIso, endzeit: endIso, status: "Abgeschlossen", gesamt_km: km }
+      : item))
+    setEditingShiftId(null)
+    setEditingShiftStart("")
+    setEditingShiftEnd("")
+    setEditingShiftKm("")
+    setShiftEditMessage("Schicht wurde erfolgreich korrigiert.")
+  }
+
+  async function deleteShift(row: any) {
+    if (!canEditShiftCorrections) {
+      setShiftEditMessage("Nur Admin und Disponent dürfen Arbeitszeiten löschen.")
+      return
+    }
+    if (!row?.id) return
+    if (!window.confirm("Diese Schicht wirklich löschen? Dieser Vorgang kann nicht rückgängig gemacht werden.")) return
+
+    const { error: segmentDeleteError } = await supabase
+      .from("schicht_fahrzeuge")
+      .delete()
+      .eq("schicht_id", row.id)
+
+    if (segmentDeleteError) {
+      setShiftEditMessage("Fahrzeugabschnitte konnten nicht gelöscht werden: " + segmentDeleteError.message)
+      return
+    }
+
+    const { data: deletedRows, error } = await supabase
+      .from("schichten")
+      .delete()
+      .eq("id", row.id)
+      .select("id")
+
+    if (error) {
+      setShiftEditMessage("Schicht konnte nicht gelöscht werden: " + error.message)
+      return
+    }
+
+    // Supabase kann bei fehlender DELETE-RLS-Berechtigung 0 Zeilen melden,
+    // ohne einen offensichtlichen Fehler zu werfen. Deshalb prüfen wir,
+    // ob die Datenbank tatsächlich eine Zeile gelöscht hat.
+    if (!deletedRows || deletedRows.length === 0) {
+      setShiftEditMessage(
+        "Die Schicht wurde nicht aus der Datenbank gelöscht. Bitte prüfe in Supabase die DELETE-RLS-Policy für die Tabelle schichten."
+      )
+      return
+    }
+
+    // Nach erfolgreichem Datenbank-Löschen erneut laden, damit die Anzeige
+    // exakt dem Datenbankstand entspricht.
+    await loadReportData()
+    setReportShiftRows((rows) => rows.filter((item) => item.id !== row.id))
+    if (editingShiftId === row.id) {
+      setEditingShiftId(null)
+      setEditingShiftStart("")
+      setEditingShiftEnd("")
+      setEditingShiftKm("")
+    }
+    setShiftEditMessage("Schicht wurde gelöscht.")
+  }
+
+  async function deleteWorkEntry(row: any) {
+    if (!canEditShiftCorrections) {
+      setShiftEditMessage("Nur Admin und Disponent dürfen Arbeitszeiten löschen.")
+      return
+    }
+    if (!row?.id) return
+    if (!window.confirm("Diese manuelle Arbeitszeit wirklich löschen? Dieser Vorgang kann nicht rückgängig gemacht werden.")) return
+
+    const { error } = await supabase.from("fahrer_arbeitszeiten").delete().eq("id", row.id)
+    if (error) {
+      setShiftEditMessage("Arbeitszeit konnte nicht gelöscht werden: " + error.message)
+      return
+    }
+
+    setReportWorkRows((rows) => rows.filter((item: any) => item.id !== row.id))
+    setShiftEditMessage("Manuelle Arbeitszeit wurde gelöscht.")
+  }
+
+  function reportShiftMinutes(row: any): number {
+    if (!row?.startzeit || !row?.endzeit) return 0
+    const start = new Date(row.startzeit).getTime()
+    const end = new Date(row.endzeit).getTime()
+    if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start) return 0
+    return Math.floor((end - start) / 60000)
+  }
+
+  function reportShiftLine(row: any): string {
+    const start = row.startzeit ? new Date(row.startzeit) : null
+    const end = row.endzeit ? new Date(row.endzeit) : null
+    const date = start && !Number.isNaN(start.getTime()) ? start.toLocaleDateString("de-DE", { day: "2-digit", month: "short" }).toUpperCase() : "-"
+    const time = start && end && !Number.isNaN(start.getTime()) && !Number.isNaN(end.getTime())
+      ? `${start.toLocaleTimeString("de-DE", { hour: "2-digit", minute: "2-digit" })} Uhr – ${end.toLocaleTimeString("de-DE", { hour: "2-digit", minute: "2-digit" })} Uhr`
+      : "offene Schicht"
+    const km = Number(row.gesamt_km) || 0
+    return `${date} ${time} · ${reportShiftMinutes(row)} Min Arbeitszeit · 0 Min Pause · ${km} km`
   }
 
   function downloadReportCsv() {
@@ -4061,8 +4450,15 @@ function App() {
     const margin = 14
     let y = 18
 
+    const ensureSpace = (height = 8) => {
+      if (y + height > 280) {
+        doc.addPage()
+        y = 18
+      }
+    }
+
     doc.setFontSize(18)
-    doc.text("TransportApp – Bericht", margin, y)
+    doc.text("TransportApp – Fahrerbericht", margin, y)
     y += 9
     doc.setFontSize(10)
     doc.text(`Zeitraum: ${reportStart} bis ${reportEnd}`, margin, y)
@@ -4070,55 +4466,81 @@ function App() {
     doc.text(`Fahrer: ${getReportDriverLabel()}`, margin, y)
     y += 10
 
+    doc.setFontSize(11)
     const summaryLines = [
       `Touren: ${reportStats.tours}`,
       `Abgeschlossene Touren: ${reportStats.completedTours}`,
       `Lieferungen: ${reportStats.deliveries}`,
       `Erledigte Lieferungen: ${reportStats.completedDeliveries}`,
       `Verspätete Lieferungen: ${reportStats.delayedDeliveries}`,
-      `Kilometer: ${reportStats.kilometers} km`,
-      `Arbeitszeit: ${formatMinutes(reportStats.workMinutes)}`,
+      `Kilometer gesamt: ${reportStats.kilometers} km`,
+      `Arbeitszeit gesamt: ${formatMinutes(reportStats.workMinutes)}`,
     ]
+    summaryLines.forEach((line) => { doc.text(line, margin, y); y += 6 })
 
-    doc.setFontSize(11)
-    summaryLines.forEach((line) => {
-      doc.text(line, margin, y)
-      y += 6
-    })
+    y += 5
+    doc.setFontSize(14)
+    doc.setFont("helvetica", "bold")
+    doc.text("Schichten / Ein- und Ausstichzeiten", margin, y)
+    y += 8
+    doc.setFont("helvetica", "normal")
+    doc.setFontSize(9)
 
-    y += 4
+    if (!reportShiftRows.length) {
+      doc.text("Keine Ein-/Ausstech-Schichten im gewählten Zeitraum.", margin, y)
+      y += 7
+    } else {
+      ;(reportShiftRows || []).forEach((row: any) => {
+        ensureSpace(12)
+        const start = row.startzeit ? new Date(row.startzeit) : null
+        const end = row.endzeit ? new Date(row.endzeit) : null
+        const date = start && !Number.isNaN(start.getTime()) ? start.toLocaleDateString("de-DE", { day: "2-digit", month: "short" }).toUpperCase() : "-"
+        const time = start && end && !Number.isNaN(start.getTime()) && !Number.isNaN(end.getTime())
+          ? `${start.toLocaleTimeString("de-DE", { hour: "2-digit", minute: "2-digit" })} Uhr – ${end.toLocaleTimeString("de-DE", { hour: "2-digit", minute: "2-digit" })} Uhr`
+          : "offene Schicht"
+        const km = Number(row.gesamt_km) || 0
+        doc.setFont("helvetica", "bold")
+        doc.text(`${date}  ${time}`, margin, y)
+        y += 5
+        doc.setFont("helvetica", "normal")
+        doc.text(`${reportShiftMinutes(row)} Min Arbeitszeit · 0 Min Pause · ${km} km`, margin + 4, y)
+        y += 6
+      })
+    }
+
+    ensureSpace(14)
+    y += 3
     doc.setFontSize(13)
+    doc.setFont("helvetica", "bold")
+    doc.text("Manuell erfasste Arbeitszeiten", margin, y)
+    y += 8
+    doc.setFont("helvetica", "normal")
+    doc.setFontSize(9)
+    if (!reportWorkRows.length) {
+      doc.text("Keine manuell erfassten Arbeitszeiten im gewählten Zeitraum.", margin, y)
+      y += 7
+    } else {
+      ;(reportWorkRows || []).forEach((row: any) => {
+        ensureSpace(10)
+        doc.text(`${row.datum || "-"}  ${row.arbeitsbeginn || "-"} Uhr – ${row.arbeitsende || "-"} Uhr · ${row.pause_minuten || 0} Min Pause · ${formatMinutes(workMinutes(row as WorkEntry))}`, margin, y)
+        y += 6
+      })
+    }
+
+    ensureSpace(16)
+    y += 5
+    doc.setFontSize(13)
+    doc.setFont("helvetica", "bold")
     doc.text("Touren im Zeitraum", margin, y)
     y += 8
     doc.setFontSize(9)
-
-    const drawHeader = () => {
-      doc.setFont("helvetica", "bold")
-      doc.text("Tour", margin, y)
-      doc.text("Datum", margin + 30, y)
-      doc.text("Fahrer", margin + 58, y)
-      doc.text("Status", margin + 112, y)
-      doc.text("KM", margin + 158, y)
-      doc.setFont("helvetica", "normal")
-      y += 5
-    }
-
-    drawHeader()
-
+    doc.setFont("helvetica", "normal")
     ;(reportTourRows || []).forEach((tour: any) => {
-      if (y > 280) {
-        doc.addPage()
-        y = 18
-        drawHeader()
-      }
+      ensureSpace(8)
       const start = tour.km_start != null ? Number(tour.km_start) : null
       const end = tour.km_ende != null ? Number(tour.km_ende) : null
       const km = start != null && end != null && end >= start ? end - start : null
-      doc.text(String(tour.tournummer || ""), margin, y)
-      doc.text(formatTourDate(tour.datum), margin + 30, y)
-      doc.text(String(tour.fahrer || "-").slice(0, 28), margin + 58, y)
-      doc.text(String(tour.status || "Offen").slice(0, 20), margin + 112, y)
-      doc.text(km != null ? `${km}` : "-", margin + 158, y)
+      doc.text(`${tour.tournummer || "-"} · ${formatTourDate(tour.datum)} · ${tour.fahrer || "-"} · ${tour.status || "Offen"} · ${km != null ? `${km} km` : "km unvollständig"}`, margin, y)
       y += 5
     })
 
@@ -4156,28 +4578,43 @@ function App() {
   ): Promise<boolean> {
     setDeliverySaving(true)
 
-    const { error } = await supabase
-      .from("lieferungen")
-      .update(changes)
-      .eq("id", id)
+    try {
+      const { error } = await supabase
+        .from("lieferungen")
+        .update(changes)
+        .eq("id", id)
 
-    setDeliverySaving(false)
+      if (error) {
+        console.error(
+          "Fehler beim Speichern der Lieferung:",
+          error
+        )
 
-    if (error) {
+        alert(
+          "Die Änderung konnte nicht gespeichert werden:\n\n" +
+            error.message
+        )
+
+        return false
+      }
+
+      return true
+    } catch (error) {
       console.error(
-        "Fehler beim Speichern der Lieferung:",
+        "Unerwarteter Fehler beim Speichern der Lieferung:",
         error
       )
 
       alert(
-        "Die Änderung konnte nicht gespeichert werden:\n\n" +
-          error.message
+        "Die Änderung konnte nicht gespeichert werden. Bitte prüfe die Verbindung und versuche es erneut."
       )
 
       return false
+    } finally {
+      // Ganz wichtig: Auch bei einem unerwarteten Fehler dürfen die
+      // Schaltflächen nicht dauerhaft deaktiviert bleiben.
+      setDeliverySaving(false)
     }
-
-    return true
   }
 
   async function changeDeliveryStatus(
@@ -4418,46 +4855,13 @@ function App() {
     setActiveDelivery(id)
   }
 
-  async function setDeliveredTime(
+  async function setDepartureTime(
     id: number,
     time: string
   ) {
     const delivery = deliveries.find((item) => item.id === id)
     if (!delivery || delivery.status !== "Beim Kunden" || !delivery.arrivalTime) {
       alert("Bitte zuerst die Ankunft beim Kunden erfassen.")
-      return
-    }
-
-    const success =
-      await updateDelivery(id, {
-        angeliefert_zeit:
-          time || null,
-      })
-
-    if (!success) {
-      return
-    }
-
-    setDeliveries((old) =>
-      old.map((delivery) =>
-        delivery.id === id
-          ? {
-              ...delivery,
-              deliveredTime:
-                time || undefined,
-            }
-          : delivery
-      )
-    )
-  }
-
-  async function setDepartureTime(
-    id: number,
-    time: string
-  ) {
-    const delivery = deliveries.find((item) => item.id === id)
-    if (!delivery || delivery.status !== "Beim Kunden" || !delivery.deliveredTime) {
-      alert("Bitte zuerst die Lieferung als angeliefert erfassen.")
       return
     }
 
@@ -4531,45 +4935,21 @@ function App() {
     }
   }
 
-  function handleNoteChange(
-    id: number,
-    note: string
-  ) {
+  function handleDriverNoteChange(id: number, note: string) {
     setDeliveries((old) =>
       old.map((delivery) =>
-        delivery.id === id
-          ? {
-              ...delivery,
-              note,
-            }
-          : delivery
+        delivery.id === id ? { ...delivery, driverNote: note } : delivery
       )
     )
   }
 
-  async function saveNote(
-    id: number,
-    note: string
-  ) {
-    const success =
-      await updateDelivery(id, {
-        notiz: note.trim() || null,
-      })
-
-    if (!success) {
-      return
-    }
-
+  async function saveDriverNote(id: number, note: string) {
+    const success = await updateDelivery(id, { fahrernotiz: note.trim() || null })
+    if (!success) return
     const updatedDelivery = deliveries.find((delivery) => delivery.id === id)
-
     setDeliveries((old) =>
       old.map((delivery) =>
-        delivery.id === id
-          ? {
-              ...delivery,
-              note,
-            }
-          : delivery
+        delivery.id === id ? { ...delivery, driverNote: note } : delivery
       )
     )
 
@@ -4582,8 +4962,7 @@ function App() {
         .maybeSingle()
 
       if (complaintRow?.id) {
-        await supabase
-          .from("kundenbeschwerden")
+        await supabase.from("kundenbeschwerden")
           .update({ beschreibung: note.trim() || "Beschwerde gemeldet" })
           .eq("id", complaintRow.id)
       } else {
@@ -4597,6 +4976,85 @@ function App() {
       }
       await loadCustomers()
     }
+  }
+
+  async function uploadDeliveryDocuments(
+    deliveryId: number,
+    documentType: "Frachtbrief" | "Tankbeleg",
+    files: FileList | null
+  ) {
+    if (!files || files.length === 0) return
+    if (!currentUser?.id || !tour?.id) {
+      alert("Die Tour oder der angemeldete Benutzer wurde nicht gefunden.")
+      return
+    }
+
+    const selectedFiles = Array.from(files)
+    const allowedTypes = ["application/pdf", "image/jpeg", "image/png"]
+    const invalidFile = selectedFiles.find(
+      (file) => !allowedTypes.includes(file.type) || file.size > 15 * 1024 * 1024
+    )
+    if (invalidFile) {
+      alert("Bitte nur PDF-, JPG- oder PNG-Dateien bis maximal 15 MB hochladen.")
+      return
+    }
+
+    setDeliveryUploading(deliveryId)
+    setDeliveryDocumentMessage((old) => ({ ...old, [deliveryId]: "" }))
+
+    for (const file of selectedFiles) {
+      const safeName = file.name.replace(/[^a-zA-Z0-9._-]/g, "_")
+      const path = `touren/${tour.id}/lieferungen/${deliveryId}/${crypto.randomUUID()}_${safeName}`
+
+      const { error: uploadError } = await supabase.storage
+        .from("dokumente")
+        .upload(path, file, { cacheControl: "3600", upsert: false })
+
+      if (uploadError) {
+        setDeliveryDocumentMessage((old) => ({
+          ...old, [deliveryId]: `Upload fehlgeschlagen: ${uploadError.message}`,
+        }))
+        setDeliveryUploading(null)
+        return
+      }
+
+      const { error: insertError } = await supabase.from("tour_dokumente").insert({
+        tour_id: tour.id,
+        lieferung_id: deliveryId,
+        dokumenttyp: documentType,
+        dateiname: file.name,
+        speicherpfad: path,
+        erstellt_von: currentUser.id,
+      })
+
+      if (insertError) {
+        await supabase.storage.from("dokumente").remove([path])
+        setDeliveryDocumentMessage((old) => ({
+          ...old, [deliveryId]: `Dokument konnte nicht gespeichert werden: ${insertError.message}`,
+        }))
+        setDeliveryUploading(null)
+        return
+      }
+    }
+
+    setDeliveryDocumentMessage((old) => ({
+      ...old, [deliveryId]: `${selectedFiles.length} ${documentType}(e) erfolgreich hochgeladen.`,
+    }))
+    setDeliveryUploading(null)
+    await loadDeliveries(tour.id)
+  }
+
+  async function openTourDocument(document: TourDocumentRecord) {
+    const { data, error } = await supabase.storage
+      .from("dokumente")
+      .createSignedUrl(document.speicherpfad, 300)
+
+    if (error || !data?.signedUrl) {
+      alert("Das Dokument konnte nicht geöffnet werden.\\n\\n" + (error?.message || "Unbekannter Fehler"))
+      return
+    }
+
+    window.open(data.signedUrl, "_blank", "noopener,noreferrer")
   }
 
   async function synchronizeTourCompletion(tourId: number) {
@@ -4664,13 +5122,6 @@ function App() {
       return
     }
 
-    if (!delivery.deliveredTime) {
-      alert(
-        "Bitte zuerst die Zeit bei 'Angeliefert' eintragen."
-      )
-      return
-    }
-
     if (!delivery.departureTime) {
       alert(
         "Bitte zuerst die Abfahrtszeit eintragen."
@@ -4731,6 +5182,12 @@ function App() {
   const [newTourStatus, setNewTourStatus] =
     useState("Offen")
 
+  const [newTourKmStart, setNewTourKmStart] =
+    useState("")
+
+  const [newTourKmEnd, setNewTourKmEnd] =
+    useState("")
+
   const [newDeliveries, setNewDeliveries] =
     useState<NewDelivery[]>([
       {
@@ -4738,6 +5195,8 @@ function App() {
         address: "",
         plannedTime: "",
         kundeId: null,
+        customerAmount: "",
+        note: "",
       },
     ])
 
@@ -4752,6 +5211,8 @@ function App() {
         address: "",
         plannedTime: "",
         kundeId: null,
+        customerAmount: "",
+        note: "",
       },
     ])
   }
@@ -4788,11 +5249,15 @@ function App() {
     setNewTourDriverId("")
     setNewTourVehicleId("")
     setNewTourStatus("Offen")
+    setNewTourKmStart("")
+    setNewTourKmEnd("")
     setNewDeliveries([
       {
         customer: "",
         address: "",
         plannedTime: "",
+        customerAmount: "",
+        note: "",
       },
     ])
   }
@@ -4839,6 +5304,28 @@ function App() {
       alert(
         `Das Fahrzeug ${selectedVehicleForTour.kennzeichen} ist aktuell ${getVehicleStatusLabel(selectedVehicleForTour.status).replace(/^\S+\s*/, "")}. Bitte ein verfügbares Fahrzeug auswählen.`
       )
+      return
+    }
+
+    const newKmStart = newTourKmStart.trim() === ""
+      ? null
+      : Number(newTourKmStart.replace(/\./g, "").replace(/,/g, "."))
+    const newKmEnd = newTourKmEnd.trim() === ""
+      ? null
+      : Number(newTourKmEnd.replace(/\./g, "").replace(/,/g, "."))
+
+    if (newKmStart != null && (!Number.isFinite(newKmStart) || newKmStart < 0)) {
+      alert("Bitte einen gültigen Startkilometerstand eingeben.")
+      return
+    }
+
+    if (newKmEnd != null && (!Number.isFinite(newKmEnd) || newKmEnd < 0)) {
+      alert("Bitte einen gültigen Endkilometerstand eingeben.")
+      return
+    }
+
+    if (newKmStart != null && newKmEnd != null && newKmEnd < newKmStart) {
+      alert("Der Endkilometerstand darf nicht kleiner als der Startkilometerstand sein.")
       return
     }
 
@@ -4893,6 +5380,8 @@ function App() {
           newTourDriver.trim(),
         status:
           newTourStatus,
+        km_start: newKmStart,
+        km_ende: newKmEnd,
       })
       .select()
       .single()
@@ -4923,6 +5412,12 @@ function App() {
             delivery.kundeId || null,
           geplante_zeit:
             delivery.plannedTime,
+          notiz:
+            delivery.note.trim() || null,
+          kundenbetrag:
+            delivery.customerAmount.trim() === ""
+              ? null
+              : Number(delivery.customerAmount.replace(",", ".")),
           status: "Offen",
         })
       )
@@ -5004,6 +5499,8 @@ function App() {
 
   const [editingDeliveryTime, setEditingDeliveryTime] =
     useState("")
+  const [editingDeliveryAmount, setEditingDeliveryAmount] =
+    useState("")
 
   const [addingManagementDelivery, setAddingManagementDelivery] =
     useState(false)
@@ -5015,6 +5512,8 @@ function App() {
     useState("")
 
   const [managementDeliveryTime, setManagementDeliveryTime] =
+    useState("")
+  const [managementDeliveryAmount, setManagementDeliveryAmount] =
     useState("")
 
   function loadTourIntoManagement(
@@ -5059,6 +5558,105 @@ function App() {
       loadTourIntoManagement(tour)
     }
   }, [tour])
+
+  function downloadTourInvoicePdf() {
+    if (!tour) return
+
+    const amount = deliveries.reduce((sum, item) => {
+      const value = Number(item.customerAmount)
+      return Number.isFinite(value) ? sum + value : sum
+    }, 0)
+
+    const kilometers =
+      tourKmStart !== "" &&
+      tourKmEnd !== "" &&
+      Number(tourKmEnd) >= Number(tourKmStart)
+        ? Number(tourKmEnd) - Number(tourKmStart)
+        : null
+
+    const firstCustomer = deliveries.find((item) => item.customer.trim())
+    const invoiceNumber = `RE-${tour.tournummer || tour.id}-${String(tour.datum || "").replace(/-/g, "")}`
+    const paymentDays = Math.max(0, Number(invoicePaymentDays) || 0)
+    const dueDate = new Date()
+    dueDate.setDate(dueDate.getDate() + paymentDays)
+    const formatDate = (value: Date) =>
+      `${String(value.getDate()).padStart(2, "0")}.${String(value.getMonth() + 1).padStart(2, "0")}.${value.getFullYear()}`
+    const euro = (value: number) =>
+      `${value.toFixed(2).replace(".", ",")} EUR`
+
+    const doc = new jsPDF()
+    const left = 20
+    const right = 190
+
+    doc.setFontSize(9)
+    doc.text(invoiceCompanyName.trim() || "Ihr Firmenname", left, 20)
+    doc.text(invoiceCompanyAddress.trim() || "Ihre Firmenanschrift", left, 25)
+    if (invoiceCompanyTaxId.trim()) {
+      doc.text(`Steuer-/USt-ID: ${invoiceCompanyTaxId.trim()}`, left, 30)
+    }
+
+    doc.setFontSize(20)
+    doc.text("RECHNUNG", right, 22, { align: "right" })
+    doc.setFontSize(10)
+    doc.text(`Rechnungsnummer: ${invoiceNumber}`, right, 32, { align: "right" })
+    doc.text(`Rechnungsdatum: ${formatDate(new Date())}`, right, 39, { align: "right" })
+
+    doc.setFontSize(12)
+    doc.text("Rechnungsempfänger", left, 58)
+    doc.setFontSize(10)
+    doc.text(firstCustomer?.customer || "Kunde nicht angegeben", left, 66)
+    doc.text(firstCustomer?.address || "Adresse nicht angegeben", left, 73)
+
+    doc.setFontSize(10)
+    doc.text(`Tour: ${tour.tournummer || "-"}`, left, 88)
+    doc.text(`Tourdatum: ${formatTourDate(tour.datum)}`, left, 95)
+    if (kilometers != null) {
+      doc.text(`Gefahrene Strecke: ${kilometers} km`, right, 95, { align: "right" })
+    }
+
+    let y = 112
+    doc.setFontSize(11)
+    doc.text("Leistung", left, y)
+    doc.text("Betrag", right, y, { align: "right" })
+    doc.line(left, y + 3, right, y + 3)
+    y += 13
+
+    deliveries.forEach((item, index) => {
+      const value = Number(item.customerAmount)
+      if (!Number.isFinite(value)) return
+      const description = `${index + 1}. ${item.customer || "Transportleistung"} – Transportleistung`
+      doc.setFontSize(10)
+      doc.text(description.slice(0, 85), left, y)
+      doc.text(euro(value), right, y, { align: "right" })
+      y += 8
+    })
+
+    if (kilometers != null) {
+      doc.text(`Dokumentierte Strecke: ${kilometers} km`, left, y + 3)
+      y += 11
+    }
+
+    doc.line(left, y + 2, right, y + 2)
+    doc.setFontSize(12)
+    doc.text("Gesamtbetrag", left, y + 14)
+    doc.text(euro(amount), right, y + 14, { align: "right" })
+
+    doc.setFontSize(10)
+    doc.text(`Zahlungsziel: ${formatDate(dueDate)} (${paymentDays} Tage)`, left, y + 29)
+    if (invoiceBankDetails.trim()) {
+      doc.text("Zahlungsinformationen:", left, y + 40)
+      const bankLines = doc.splitTextToSize(invoiceBankDetails.trim(), 165)
+      doc.text(bankLines, left, y + 47)
+    }
+
+    doc.setFontSize(8)
+    doc.text(
+      "Vielen Dank für Ihren Auftrag.",
+      left,
+      278
+    )
+    doc.save(`${invoiceNumber}.pdf`)
+  }
 
   async function saveTourChanges() {
     if (!tour) {
@@ -5255,6 +5853,9 @@ function App() {
     setEditingDeliveryTime(
       delivery.plannedTime
     )
+    setEditingDeliveryAmount(
+      delivery.customerAmount != null ? String(delivery.customerAmount).replace(".", ",") : ""
+    )
   }
 
   function cancelEditingDelivery() {
@@ -5262,6 +5863,7 @@ function App() {
     setEditingDeliveryCustomer("")
     setEditingDeliveryAddress("")
     setEditingDeliveryTime("")
+    setEditingDeliveryAmount("")
   }
 
   async function saveEditedDelivery() {
@@ -5291,6 +5893,10 @@ function App() {
           editingDeliveryAddress.trim(),
         geplante_zeit:
           editingDeliveryTime,
+        kundenbetrag:
+          editingDeliveryAmount.trim() === ""
+            ? null
+            : Number(editingDeliveryAmount.replace(",", ".")),
       })
       .eq(
         "id",
@@ -5407,6 +6013,10 @@ function App() {
           managementDeliveryAddress.trim(),
         geplante_zeit:
           managementDeliveryTime,
+        kundenbetrag:
+          managementDeliveryAmount.trim() === ""
+            ? null
+            : Number(managementDeliveryAmount.replace(",", ".")),
         status: "Offen",
       })
 
@@ -5423,6 +6033,7 @@ function App() {
     setManagementDeliveryCustomer("")
     setManagementDeliveryAddress("")
     setManagementDeliveryTime("")
+    setManagementDeliveryAmount("")
     setAddingManagementDelivery(false)
 
     await loadDeliveries(
@@ -6390,7 +7001,8 @@ function App() {
     if (nextPage === "users" && !isAdmin) return
     if (nextPage === "sops" && !currentUser) return
     if (nextPage === "customers" && !(isAdmin || currentUser?.rolle === "Disponent" || hasPermission("kunden") || hasPermission("touren_verwalten") || hasPermission("touren_anlegen"))) return
-    if (nextPage !== "users" && nextPage !== "customers" && nextPage !== "sops" && requiredPermission[nextPage] && !hasPermission(requiredPermission[nextPage]!)) return
+    const canOpenReports = nextPage === "reports" && canViewReports
+    if (nextPage !== "users" && nextPage !== "customers" && nextPage !== "sops" && !canOpenReports && requiredPermission[nextPage] && !hasPermission(requiredPermission[nextPage]!)) return
 
     setPage(nextPage)
 
@@ -7113,16 +7725,8 @@ function App() {
       <header className="header">
         <div>
           <h1>TransportApp</h1>
-          <p>{currentUser.name || currentUser.email}</p>
         </div>
 
-        <button
-          type="button"
-          className="secondary-button"
-          onClick={logoutUser}
-        >
-          Abmelden
-        </button>
       </header>
 
       {/* NAVIGATION */}
@@ -7158,6 +7762,17 @@ function App() {
             ×
           </button>
         </div>
+
+        <button
+          type="button"
+          className="navigation-section-title navigation-section-toggle"
+          onClick={() => toggleMenuSection("arbeitsalltag")}
+          aria-expanded={expandedMenuSections.arbeitsalltag}
+        >
+          <span>Arbeitsalltag</span>
+          <span>{expandedMenuSections.arbeitsalltag ? "▾" : "▸"}</span>
+        </button>
+        <div className={expandedMenuSections.arbeitsalltag ? "navigation-submenu open" : "navigation-submenu"}>
 
         <button
           className={
@@ -7210,6 +7825,19 @@ function App() {
             <span style={{ marginRight: "8px" }}>🚚</span>Meine Touren
           </button>
         )}
+
+        </div>
+
+        <button
+          type="button"
+          className="navigation-section-title navigation-section-toggle"
+          onClick={() => toggleMenuSection("verwaltung")}
+          aria-expanded={expandedMenuSections.verwaltung}
+        >
+          <span>Touren & Verwaltung</span>
+          <span>{expandedMenuSections.verwaltung ? "▾" : "▸"}</span>
+        </button>
+        <div className={expandedMenuSections.verwaltung ? "navigation-submenu open" : "navigation-submenu"}>
 
         {(isAdmin || currentUser?.rolle === "Disponent" || hasPermission("kunden") || hasPermission("touren_verwalten") || hasPermission("touren_anlegen")) && (
           <button
@@ -7281,14 +7909,21 @@ function App() {
               <span style={{ marginRight: "8px" }}>👨‍✈️</span>Fahrer & Personal
             </button>
 
-            <button
-              className={page === "work-time" ? "nav active" : "nav"}
-              onClick={() => navigateTo("work-time")}
-            >
-              <span style={{ marginRight: "8px" }}>⏱️</span>Arbeitszeit & Kilometer
-            </button>
           </>
         )}
+
+        </div>
+
+        <button
+          type="button"
+          className="navigation-section-title navigation-section-toggle"
+          onClick={() => toggleMenuSection("auswertung")}
+          aria-expanded={expandedMenuSections.auswertung}
+        >
+          <span>Dokumente & Auswertung</span>
+          <span>{expandedMenuSections.auswertung ? "▾" : "▸"}</span>
+        </button>
+        <div className={expandedMenuSections.auswertung ? "navigation-submenu open" : "navigation-submenu"}>
 
         {hasPermission("dokumente") && <button
           className={page === "documents" ? "nav active" : "nav"}
@@ -7297,7 +7932,7 @@ function App() {
           <span style={{ marginRight: "8px" }}>📁</span>Dokumente
         </button>}
 
-        {hasPermission("auswertungen") && <button
+        {canViewReports && <button
           className={page === "reports" ? "nav active" : "nav"}
           onClick={() => navigateTo("reports")}
         >
@@ -7318,6 +7953,19 @@ function App() {
           </button>
         )}
 
+        </div>
+
+        <button
+          type="button"
+          className="navigation-section-title navigation-section-toggle"
+          onClick={() => toggleMenuSection("einstellungen")}
+          aria-expanded={expandedMenuSections.einstellungen}
+        >
+          <span>Schulung & Einstellungen</span>
+          <span>{expandedMenuSections.einstellungen ? "▾" : "▸"}</span>
+        </button>
+        <div className={expandedMenuSections.einstellungen ? "navigation-submenu open" : "navigation-submenu"}>
+
         <button
           className={page === "sops" ? "nav active" : "nav"}
           onClick={() => navigateTo("sops")}
@@ -7337,6 +7985,16 @@ function App() {
             <span style={{ marginRight: "8px" }}>⚙️</span>Benutzer & Berechtigungen
           </button>
         )}
+        
+</div>
+
+        <button
+          type="button"
+          className="nav"
+          onClick={logoutUser}
+        >
+          <span style={{ marginRight: "8px" }}>↪️</span>Abmelden
+        </button>
 
 
 
@@ -7408,39 +8066,6 @@ function App() {
                     </div>
                   ))}
 
-                  <h3 style={{ marginTop: "28px" }}>Weitere zugewiesene Touren</h3>
-
-                  {tours.filter((item) => item.datum !== today).map((item) => (
-                    <div
-                      key={item.id}
-                      style={{
-                        border: "1px solid #ddd",
-                        borderRadius: "12px",
-                        padding: "14px",
-                        marginTop: "12px",
-                      }}
-                    >
-                      <strong>{item.tournummer}</strong>
-                      <p style={{ margin: "6px 0" }}>
-                        Datum: {formatTourDate(item.datum)} · Status: {item.status}
-                      </p>
-                      <p style={{ margin: "6px 0", fontWeight: 700 }}>
-                        Zustellzeit: {tourNextPlannedTimes[item.id] ? `${tourNextPlannedTimes[item.id]} Uhr` : "Keine offene Zustellung"}
-                      </p>
-                      <button
-                        type="button"
-                        className="secondary-button"
-                        onClick={() => {
-                          setSelectedTourId(item.id)
-                          setTour(item)
-                          loadDeliveries(item.id)
-                          setPage("tour")
-                        }}
-                      >
-                        Tour öffnen
-                      </button>
-                    </div>
-                  ))}
                 </>
               )}
             </div>
@@ -7454,7 +8079,12 @@ function App() {
         {page === "dashboard" && (
           <section>
 
-            <div className="card">
+            <div
+              className="card"
+              style={{
+                display: currentUser.rolle === "Fahrer" ? "none" : undefined,
+              }}
+            >
               <div
                 style={{
                   display: "flex",
@@ -7721,19 +8351,29 @@ function App() {
               </div>
             )}
 
-            <div className="card">
-              <h2>
+            <div className="card dashboard-greeting-card">
+              <h2
+                style={{
+                  margin: 0,
+                  fontSize: "clamp(20px, 3vw, 28px)",
+                  lineHeight: 1.25,
+                  fontWeight: 700,
+                }}
+              >
                 Hallo {currentUser.name || currentUser.email} 👋
               </h2>
             </div>
 
-            {currentUser.rolle === "Fahrer" && (
-              <div className="card" style={{ marginTop: "16px" }}>
+            <div className="card" style={{ marginTop: "16px" }}>
                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: "12px", flexWrap: "wrap" }}>
                   <div>
-                    <h2 style={{ marginBottom: "4px" }}>⏱️ Schicht & Kilometer</h2>
+                    <h2 style={{ marginBottom: "4px" }}>
+                      {currentUser.rolle === "Fahrer" ? "⏱️ Schicht & Kilometer" : "⏱️ Arbeitszeit"}
+                    </h2>
                     <p style={{ marginBottom: 0 }}>
-                      Arbeitszeit und Fahrzeugkilometer werden automatisch erfasst.
+                      {currentUser.rolle === "Fahrer"
+                        ? "Arbeitszeit und Fahrzeugkilometer werden automatisch erfasst."
+                        : "Deine Arbeitszeit wird automatisch erfasst."}
                     </p>
                   </div>
                   <button
@@ -7757,54 +8397,63 @@ function App() {
                 ) : !driverShift ? (
                   <div style={{ marginTop: "16px", padding: "16px", border: "1px solid #ddd", borderRadius: "12px" }}>
                     <h3 style={{ marginTop: 0 }}>Schicht starten</h3>
-                    <div style={{ display: "grid", gap: "10px", gridTemplateColumns: "repeat(auto-fit,minmax(220px,1fr))" }}>
-                      <label>
-                        Fahrzeug
-                        <select
-                          value={shiftVehicleId}
-                          onChange={(e) => {
-                            const id = e.target.value
-                            setShiftVehicleId(id)
-                            const selected = getShiftVehicle(id)
-                            if (selected?.kilometerstand != null) {
-                              setShiftKm(String(selected.kilometerstand))
-                            } else {
-                              setShiftKm("")
-                            }
-                          }}
-                          disabled={driverShiftSaving}
-                        >
-                          <option value="">Fahrzeug auswählen…</option>
-                          {vehicles
-                            .filter(isVehicleAvailableForTour)
-                            .map((item) => (
-                              <option key={item.id} value={item.id}>
-                                {item.kennzeichen} · {item.hersteller_modell || item.fahrzeugtyp || "Fahrzeug"}
-                                {item.kilometerstand != null ? ` · ${Number(item.kilometerstand).toLocaleString("de-DE")} km` : ""}
-                              </option>
-                            ))}
-                        </select>
-                      </label>
+                    {currentUser.rolle === "Fahrer" ? (
+                      <div style={{ display: "grid", gap: "10px", gridTemplateColumns: "repeat(auto-fit,minmax(220px,1fr))" }}>
+                        <label>
+                          Fahrzeug
+                          <select
+                            value={shiftVehicleId}
+                            onChange={(e) => {
+                              const id = e.target.value
+                              setShiftVehicleId(id)
+                              const selected = getShiftVehicle(id)
+                              if (selected?.kilometerstand != null) {
+                                setShiftKm(String(selected.kilometerstand))
+                              } else {
+                                setShiftKm("")
+                              }
+                            }}
+                            disabled={driverShiftSaving}
+                          >
+                            <option value="">Fahrzeug auswählen…</option>
+                            {vehicles
+                              .filter(isVehicleAvailableForTour)
+                              .map((item) => (
+                                <option key={item.id} value={item.id}>
+                                  {item.kennzeichen} · {item.hersteller_modell || item.fahrzeugtyp || "Fahrzeug"}
+                                  {item.kilometerstand != null ? ` · ${Number(item.kilometerstand).toLocaleString("de-DE")} km` : ""}
+                                </option>
+                              ))}
+                          </select>
+                        </label>
 
-                      <label>
-                        Start-Kilometer
-                        <input
-                          type="number"
-                          min="0"
-                          value={shiftKm}
-                          onChange={(e) => setShiftKm(e.target.value)}
-                          placeholder="z. B. 82000"
-                          disabled={driverShiftSaving}
-                        />
-                      </label>
-                    </div>
+                        <label>
+                          Start-Kilometer
+                          <input
+                            type="number"
+                            min="0"
+                            value={shiftKm}
+                            onChange={(e) => setShiftKm(e.target.value)}
+                            placeholder="z. B. 82000"
+                            disabled={driverShiftSaving}
+                          />
+                        </label>
+                      </div>
+                    ) : (
+                      <p style={{ marginTop: 0 }}>
+                        Du bist lediglich im Betrieb tätig – keine Fahrzeugauswahl nötig, es wird nur deine Arbeitszeit erfasst.
+                      </p>
+                    )}
 
                     <button
                       type="button"
                       className="primary-button"
                       style={{ marginTop: "12px" }}
                       onClick={startDriverShift}
-                      disabled={driverShiftSaving}
+                      disabled={
+                        driverShiftSaving ||
+                        (currentUser.rolle === "Fahrer" && (!shiftVehicleId || !shiftKm))
+                      }
                     >
                       {driverShiftSaving ? "Wird gestartet…" : "🟢 Schicht starten"}
                     </button>
@@ -7822,9 +8471,11 @@ function App() {
                             Arbeitszeit: <strong>{formatShiftDuration(driverShift.startzeit)}</strong>
                           </div>
                         </div>
-                        <div style={{ fontSize: "18px", fontWeight: 900 }}>
-                          {Number(driverShift.gesamt_km || 0).toLocaleString("de-DE")} km
-                        </div>
+                        {currentUser.rolle === "Fahrer" && (
+                          <div style={{ fontSize: "18px", fontWeight: 900 }}>
+                            {Number(driverShift.gesamt_km || 0).toLocaleString("de-DE")} km
+                          </div>
+                        )}
                       </div>
 
                       {driverShiftSegments.map((segment, index) => {
@@ -7849,103 +8500,107 @@ function App() {
                         )
                       })}
 
-                      {!shiftChangeOpen ? (
-                        <button
-                          type="button"
-                          className="secondary-button"
-                          style={{ marginTop: "12px" }}
-                          onClick={() => {
-                            const currentSegment = [...driverShiftSegments].reverse().find((item) => !item.endzeit)
-                            setShiftChangeVehicleId("")
-                            setShiftChangeEndKm("")
+                      {currentUser.rolle === "Fahrer" && (
+                        !shiftChangeOpen ? (
+                          <button
+                            type="button"
+                            className="secondary-button"
+                            style={{ marginTop: "12px" }}
+                            onClick={() => {
+                              const currentSegment = [...driverShiftSegments].reverse().find((item) => !item.endzeit)
+                              setShiftChangeVehicleId("")
+                              setShiftChangeEndKm("")
     setShiftChangeStartKm("")
-                            if (currentSegment) setShiftVehicleId(String(currentSegment.fahrzeug_id))
-                            setShiftChangeOpen(true)
-                          }}
-                          disabled={driverShiftSaving}
-                        >
-                          🔄 Fahrzeug wechseln
-                        </button>
-                      ) : (
-                        <div style={{ marginTop: "12px", padding: "14px", border: "1px solid #cbd5e1", borderRadius: "10px", background: "#f8fafc" }}>
-                          <h3 style={{ marginTop: 0 }}>Fahrzeug wechseln</h3>
-                          <div style={{ display: "grid", gap: "10px", gridTemplateColumns: "repeat(auto-fit,minmax(220px,1fr))" }}>
-                            <label>
-                              End-km aktuelles Fahrzeug
-                              <input
-                                type="number"
-                                min="0"
-                                value={shiftChangeEndKm}
-                                onChange={(e) => setShiftChangeEndKm(e.target.value)}
-                                placeholder="aktueller Kilometerstand"
-                                disabled={driverShiftSaving}
-                              />
-                            </label>
-                            <label>
-                              Neues Fahrzeug
-                              <select
-                                value={shiftChangeVehicleId}
-                                onChange={(e) => {
-                                  const id = e.target.value
-                                  setShiftChangeVehicleId(id)
-                                  const selected = getShiftVehicle(id)
-                                  if (selected?.kilometerstand != null) {
-                                    setShiftChangeStartKm(String(selected.kilometerstand))
-                                  }
-                                }}
-                                disabled={driverShiftSaving}
-                              >
-                                <option value="">Neues Fahrzeug auswählen…</option>
-                                {vehicles
-                                  .filter(isVehicleAvailableForTour)
-                                  .filter((item) => {
-                                    const currentSegment = [...driverShiftSegments].reverse().find((segment) => !segment.endzeit)
-                                    return !currentSegment || item.id !== currentSegment.fahrzeug_id
-                                  })
-                                  .map((item) => (
-                                    <option key={item.id} value={item.id}>
-                                      {item.kennzeichen} · {item.hersteller_modell || item.fahrzeugtyp || "Fahrzeug"}
-                                      {item.kilometerstand != null ? ` · ${Number(item.kilometerstand).toLocaleString("de-DE")} km` : ""}
-                                    </option>
-                                  ))}
-                              </select>
-                            </label>
-                            <label>
-                              Start-km neues Fahrzeug
-                              <input
-                                type="number"
-                                min="0"
-                                value={shiftChangeStartKm}
-                                onChange={(e) => setShiftChangeStartKm(e.target.value)}
-                                placeholder="Start-km neues Fahrzeug"
-                                disabled={driverShiftSaving}
-                              />
-                            </label>
+                              if (currentSegment) setShiftVehicleId(String(currentSegment.fahrzeug_id))
+                              setShiftChangeOpen(true)
+                            }}
+                            disabled={driverShiftSaving}
+                          >
+                            🔄 Fahrzeug wechseln
+                          </button>
+                        ) : (
+                          <div style={{ marginTop: "12px", padding: "14px", border: "1px solid #cbd5e1", borderRadius: "10px", background: "#f8fafc" }}>
+                            <h3 style={{ marginTop: 0 }}>Fahrzeug wechseln</h3>
+                            <div style={{ display: "grid", gap: "10px", gridTemplateColumns: "repeat(auto-fit,minmax(220px,1fr))" }}>
+                              <label>
+                                End-km aktuelles Fahrzeug
+                                <input
+                                  type="number"
+                                  min="0"
+                                  value={shiftChangeEndKm}
+                                  onChange={(e) => setShiftChangeEndKm(e.target.value)}
+                                  placeholder="aktueller Kilometerstand"
+                                  disabled={driverShiftSaving}
+                                />
+                              </label>
+                              <label>
+                                Neues Fahrzeug
+                                <select
+                                  value={shiftChangeVehicleId}
+                                  onChange={(e) => {
+                                    const id = e.target.value
+                                    setShiftChangeVehicleId(id)
+                                    const selected = getShiftVehicle(id)
+                                    if (selected?.kilometerstand != null) {
+                                      setShiftChangeStartKm(String(selected.kilometerstand))
+                                    }
+                                  }}
+                                  disabled={driverShiftSaving}
+                                >
+                                  <option value="">Neues Fahrzeug auswählen…</option>
+                                  {vehicles
+                                    .filter(isVehicleAvailableForTour)
+                                    .filter((item) => {
+                                      const currentSegment = [...driverShiftSegments].reverse().find((segment) => !segment.endzeit)
+                                      return !currentSegment || item.id !== currentSegment.fahrzeug_id
+                                    })
+                                    .map((item) => (
+                                      <option key={item.id} value={item.id}>
+                                        {item.kennzeichen} · {item.hersteller_modell || item.fahrzeugtyp || "Fahrzeug"}
+                                        {item.kilometerstand != null ? ` · ${Number(item.kilometerstand).toLocaleString("de-DE")} km` : ""}
+                                      </option>
+                                    ))}
+                                </select>
+                              </label>
+                              <label>
+                                Start-km neues Fahrzeug
+                                <input
+                                  type="number"
+                                  min="0"
+                                  value={shiftChangeStartKm}
+                                  onChange={(e) => setShiftChangeStartKm(e.target.value)}
+                                  placeholder="Start-km neues Fahrzeug"
+                                  disabled={driverShiftSaving}
+                                />
+                              </label>
+                            </div>
+                            <div style={{ marginTop: "10px", display: "flex", gap: "8px", flexWrap: "wrap" }}>
+                              <button type="button" className="primary-button" onClick={changeDriverShiftVehicle} disabled={driverShiftSaving}>
+                                {driverShiftSaving ? "Wird gewechselt…" : "Fahrzeugwechsel speichern"}
+                              </button>
+                              <button type="button" className="secondary-button" onClick={() => setShiftChangeOpen(false)} disabled={driverShiftSaving}>
+                                Abbrechen
+                              </button>
+                            </div>
                           </div>
-                          <div style={{ marginTop: "10px", display: "flex", gap: "8px", flexWrap: "wrap" }}>
-                            <button type="button" className="primary-button" onClick={changeDriverShiftVehicle} disabled={driverShiftSaving}>
-                              {driverShiftSaving ? "Wird gewechselt…" : "Fahrzeugwechsel speichern"}
-                            </button>
-                            <button type="button" className="secondary-button" onClick={() => setShiftChangeOpen(false)} disabled={driverShiftSaving}>
-                              Abbrechen
-                            </button>
-                          </div>
-                        </div>
+                        )
                       )}
 
                       <div style={{ marginTop: "14px", padding: "14px", border: "1px solid #ddd", borderRadius: "10px" }}>
                         <h3 style={{ marginTop: 0 }}>Schicht beenden</h3>
-                        <label>
-                          End-Kilometer aktuelles Fahrzeug
-                          <input
-                            type="number"
-                            min="0"
-                            value={shiftEndKm}
-                            onChange={(e) => setShiftEndKm(e.target.value)}
-                            placeholder="aktueller Kilometerstand"
-                            disabled={driverShiftSaving}
-                          />
-                        </label>
+                        {currentUser.rolle === "Fahrer" && (
+                          <label>
+                            End-Kilometer aktuelles Fahrzeug
+                            <input
+                              type="number"
+                              min="0"
+                              value={shiftEndKm}
+                              onChange={(e) => setShiftEndKm(e.target.value)}
+                              placeholder="aktueller Kilometerstand"
+                              disabled={driverShiftSaving}
+                            />
+                          </label>
+                        )}
                         <button
                           type="button"
                           className="primary-button"
@@ -7964,9 +8619,13 @@ function App() {
                   </div>
                 )}
               </div>
-            )}
 
-            <div className="card">
+            <div
+              className="card"
+              style={{
+                display: currentUser.rolle === "Fahrer" ? "none" : undefined,
+              }}
+            >
 
               <h2>
                 Letzter Fahrzeugcheck
@@ -8036,7 +8695,12 @@ function App() {
 
             </div>
 
-            <div className="card">
+            <div
+              className="card"
+              style={{
+                display: currentUser.rolle === "Fahrer" ? "none" : undefined,
+              }}
+            >
 
               <h2>
                 Aktuelle Tour
@@ -8950,20 +9614,7 @@ function App() {
                       </span>
                     </div>
 
-                    <div>
-                      <strong>
-                        Angeliefert
-                      </strong>
-
-                      <span>
-                        {delivery.deliveredTime
-                          ? delivery.deliveredTime +
-                            " Uhr"
-                          : "Noch nicht"}
-                      </span>
-                    </div>
-
-                    <div>
+<div>
                       <strong>
                         Abfahrt
                       </strong>
@@ -9119,7 +9770,7 @@ function App() {
                             marginBottom: "16px",
                           }}
                         >
-                          {["1 Fahrt", "2 Ankunft", "3 Angeliefert", "4 Abfahrt", "5 Erledigt"].map((label, index) => {
+                          {["1 Fahrt", "2 Ankunft", "3 Abfahrt", "4 Erledigt"].map((label, index) => {
                             const activeStep = getDeliveryStep(delivery)
                             const isDone = activeStep >= index + 1
                             return (
@@ -9150,7 +9801,7 @@ function App() {
                             fontWeight: 900,
                           }}
                         >
-                          👉 Nächster Schritt: {delivery.departureTime ? "Lieferung abschließen" : delivery.deliveredTime ? "Abfahrt vom Kunden erfassen" : "Lieferung als angeliefert erfassen"}
+                          👉 Nächster Schritt: {delivery.departureTime ? "Lieferung abschließen" : "Abfahrt vom Kunden erfassen"}
                         </div>
 
                         <div className="time-section">
@@ -9192,55 +9843,6 @@ function App() {
                               onClick={() =>
                                 arriveAtCustomer(
                                   delivery.id
-                                )
-                              }
-                            >
-                              Jetzt
-                            </button>
-
-                          </div>
-
-                        </div>
-
-                        <div className="time-section">
-
-                          <label>
-                            <strong>
-                              Angeliefert
-                            </strong>
-                          </label>
-
-                          <div className="time-row">
-
-                            <input
-                              type="time"
-                              value={
-                                delivery.deliveredTime ||
-                                ""
-                              }
-                              disabled={
-                                deliverySaving
-                              }
-                              onChange={(
-                                event
-                              ) =>
-                                setDeliveredTime(
-                                  delivery.id,
-                                  event.target
-                                    .value
-                                )
-                              }
-                            />
-
-                            <button
-                              className="secondary-button"
-                              disabled={
-                                deliverySaving
-                              }
-                              onClick={() =>
-                                setDeliveredTime(
-                                  delivery.id,
-                                  getCurrentTime()
                                 )
                               }
                             >
@@ -9344,38 +9946,71 @@ function App() {
                         </label>
 
                         <div className="note-section">
-
-                          <label>
-                            Notiz /
-                            Bemerkung
-                          </label>
-
+                          <label><strong>Kundenhinweis (nur lesen)</strong></label>
                           <textarea
-                            value={
-                              delivery.note ||
-                              ""
-                            }
-                            onChange={(
-                              event
-                            ) =>
-                              handleNoteChange(
-                                delivery.id,
-                                event.target
-                                  .value
-                              )
-                            }
-                            onBlur={(
-                              event
-                            ) =>
-                              saveNote(
-                                delivery.id,
-                                event.target
-                                  .value
-                              )
-                            }
-                            placeholder="z.B. Kunde war nicht vor Ort, Ware beschädigt..."
+                            value={delivery.note || "Kein Kundenhinweis hinterlegt."}
+                            readOnly
+                            style={{ background: "#f3f4f6", color: "#374151" }}
                           />
 
+                          <label style={{ marginTop: "12px" }}>
+                            <strong>Fahrerbericht / Besonderheiten</strong>
+                          </label>
+                          <textarea
+                            value={delivery.driverNote || ""}
+                            onChange={(event) => handleDriverNoteChange(delivery.id, event.target.value)}
+                            onBlur={(event) => saveDriverNote(delivery.id, event.target.value)}
+                            placeholder="Optional: Wartezeit, Ansprechpartner, Beschädigung oder sonstige Besonderheit ..."
+                          />
+                        </div>
+
+                        <div className="note-section">
+                          <label><strong>Frachtbriefe hochladen</strong></label>
+                          <input
+                            type="file"
+                            accept=".pdf,image/jpeg,image/png"
+                            multiple
+                            disabled={deliveryUploading === delivery.id}
+                            onChange={(event) => uploadDeliveryDocuments(delivery.id, "Frachtbrief", event.target.files)}
+                          />
+                          <small>PDF, JPG oder PNG, maximal 15 MB je Datei.</small>
+
+                          <label style={{ marginTop: "12px" }}>
+                            <strong>Tankbelege hochladen (optional)</strong>
+                          </label>
+                          <input
+                            type="file"
+                            accept=".pdf,image/jpeg,image/png"
+                            multiple
+                            disabled={deliveryUploading === delivery.id}
+                            onChange={(event) => uploadDeliveryDocuments(delivery.id, "Tankbeleg", event.target.files)}
+                          />
+                          <small>PDF, JPG oder PNG, maximal 15 MB je Datei.</small>
+
+                          {(deliveryDocuments[delivery.id] || []).length > 0 && (
+                            <div style={{ marginTop: "10px" }}>
+                              <strong>Bereits hochgeladen:</strong>
+                              <ul>
+                                {(deliveryDocuments[delivery.id] || []).map((document) => (
+                                  <li key={document.id} style={{ marginTop: "4px" }}>
+                                    <button
+                                      type="button"
+                                      className="link-button"
+                                      onClick={() => openTourDocument(document)}
+                                    >
+                                      {document.dokumenttyp}: {document.dateiname}
+                                    </button>
+                                  </li>
+                                ))}
+                              </ul>
+                            </div>
+                          )}
+
+                          {deliveryDocumentMessage[delivery.id] && (
+                            <p style={{ marginTop: "8px", fontWeight: 700 }}>
+                              {deliveryDocumentMessage[delivery.id]}
+                            </p>
+                          )}
                         </div>
 
                         <button
@@ -9414,11 +10049,6 @@ function App() {
                         </span>
 
                         <span>
-                          Angeliefert:{" "}
-                          {delivery.deliveredTime} Uhr
-                        </span>
-
-                        <span>
                           Abfahrt:{" "}
                           {delivery.departureTime} Uhr
                         </span>
@@ -9434,10 +10064,15 @@ function App() {
 
                       {delivery.note && (
                         <p>
-                          <strong>
-                            Notiz:
-                          </strong>{" "}
+                          <strong>Kundenhinweis:</strong>{" "}
                           {delivery.note}
+                        </p>
+                      )}
+
+                      {delivery.driverNote && (
+                        <p>
+                          <strong>Fahrerbericht:</strong>{" "}
+                          {delivery.driverNote}
                         </p>
                       )}
 
@@ -9485,6 +10120,46 @@ function App() {
                   <label>Adresse</label>
                   <input value={customerFormAddress} onChange={(event) => setCustomerFormAddress(event.target.value)} placeholder="Straße, PLZ Ort" />
                 </div>
+                <div className="card" style={{ marginTop: "14px", padding: "14px", background: "#f8fafc" }}>
+                  <h4 style={{ marginTop: 0 }}>Rechnungsdaten des Kunden (optional)</h4>
+                  <p style={{ marginTop: 0, color: "#4b5563" }}>
+                    Hier kannst du den Rechnungsempfänger hinterlegen, wenn die Rechnung beispielsweise an einen anderen Standort geht.
+                    Die Daten werden im Kundenstamm gespeichert und können später bei jeder Rechnung geändert werden.
+                  </p>
+                  <div className="form-group">
+                    <label>Rechnungsempfänger / Firmenname</label>
+                    <input value={customerFormInvoiceName} onChange={(event) => setCustomerFormInvoiceName(event.target.value)} placeholder="z.B. Marken Frankfurt" />
+                  </div>
+                  <div className="form-group">
+                    <label>Rechnungsanschrift</label>
+                    <input value={customerFormInvoiceAddress} onChange={(event) => setCustomerFormInvoiceAddress(event.target.value)} placeholder="Straße, PLZ Ort" />
+                  </div>
+                  <div className="form-group">
+                    <label>Steuer-/USt-ID des Kunden (optional)</label>
+                    <input value={customerFormInvoiceTaxId} onChange={(event) => setCustomerFormInvoiceTaxId(event.target.value)} placeholder="Kann später ergänzt werden" />
+                  </div>
+                  <div className="form-group">
+                    <label>Zahlungsziel des Kunden in Tagen</label>
+                    <input type="number" min="0" value={customerFormInvoicePaymentDays} onChange={(event) => setCustomerFormInvoicePaymentDays(event.target.value)} placeholder="z.B. 14" />
+                  </div>
+                  <div className="form-group">
+                    <label>Zahlungsinformationen des Kunden (optional)</label>
+                    <textarea value={customerFormInvoiceBankDetails} onChange={(event) => setCustomerFormInvoiceBankDetails(event.target.value)} placeholder="Optionaler Hinweis zur Rechnungsabwicklung" rows={2} />
+                  </div>
+                </div>
+
+                <div className="form-group">
+                  <label>Kundenwunsch / Standardnotiz</label>
+                  <textarea
+                    value={customerFormNote}
+                    onChange={(event) => setCustomerFormNote(event.target.value)}
+                    placeholder="z.B. 15 Minuten vor Ankunft anrufen, Hintereingang benutzen ..."
+                    rows={3}
+                  />
+                  <small style={{ display: "block", marginTop: "4px", color: "#4b5563" }}>
+                    Wird beim Auswählen des Kunden automatisch in die neue Tour übernommen und kann dort angepasst werden.
+                  </small>
+                </div>
                 <div style={{ display: "flex", gap: "8px", flexWrap: "wrap" }}>
                   <button className="primary-button" disabled={customerSaving} onClick={saveCustomer}>
                     {customerSaving ? "Wird gespeichert..." : customerEditingId ? "✓ Änderungen speichern" : "+ Kunde anlegen"}
@@ -9515,6 +10190,9 @@ function App() {
                       <div>
                         <h3 style={{ marginBottom: "4px" }}>{customer.name}</h3>
                         <div>{customer.adresse || "Keine Adresse hinterlegt"}</div>
+                        {customer.notiz && <div style={{ marginTop: "6px" }}><strong>Kundenwunsch:</strong> {customer.notiz}</div>}
+                        {customer.rechnungName && <div style={{ marginTop: "6px" }}><strong>Rechnung an:</strong> {customer.rechnungName}</div>}
+                        {customer.rechnungAdresse && <div><strong>Rechnungsanschrift:</strong> {customer.rechnungAdresse}</div>}
                         <div style={{ marginTop: "6px" }}>{customer.aktiv ? "🟢 Aktiv" : "⚪ Deaktiviert"}</div>
                       </div>
                       <div style={{ display: "flex", gap: "8px", flexWrap: "wrap" }}>
@@ -9716,6 +10394,54 @@ function App() {
 
               </div>
 
+              <div
+                style={{
+                  display: "grid",
+                  gridTemplateColumns: "repeat(auto-fit,minmax(180px,1fr))",
+                  gap: "12px",
+                }}
+              >
+                <div className="form-group">
+                  <label>Start-km (optional)</label>
+                  <input
+                    type="number"
+                    min="0"
+                    value={newTourKmStart}
+                    onChange={(event) => setNewTourKmStart(event.target.value)}
+                    placeholder="z. B. 82000"
+                  />
+                </div>
+                <div className="form-group">
+                  <label>End-km (optional)</label>
+                  <input
+                    type="number"
+                    min="0"
+                    value={newTourKmEnd}
+                    onChange={(event) => setNewTourKmEnd(event.target.value)}
+                    placeholder="z. B. 82400"
+                  />
+                </div>
+                <div className="form-group">
+                  <label>Gefahrene km</label>
+                  <div
+                    style={{
+                      padding: "10px 12px",
+                      background: "#f5f5f5",
+                      borderRadius: "8px",
+                      minHeight: "42px",
+                      boxSizing: "border-box",
+                    }}
+                  >
+                    {newTourKmStart !== "" &&
+                    newTourKmEnd !== "" &&
+                    Number(newTourKmEnd) >= Number(newTourKmStart)
+                      ? `${Number(newTourKmEnd) - Number(newTourKmStart)} km`
+                      : "–"}
+                  </div>
+                </div>
+              </div>
+
+
               <div className="form-group">
 
                 <label>
@@ -9867,6 +10593,32 @@ function App() {
                         }
                       />
 
+                    </div>
+
+                    <div className="form-group">
+                      <label>Kundenwunsch / Notiz für diese Tour</label>
+                      <textarea
+                        value={delivery.note}
+                        onChange={(event) => updateNewDelivery(index, "note", event.target.value)}
+                        placeholder="Kundenwunsch für diese konkrete Tour"
+                        rows={3}
+                      />
+                    </div>
+
+                    <div className="form-group">
+                      <label>Vom Kunden bezahlt (€)</label>
+                      <input
+                        type="text"
+                        inputMode="decimal"
+                        value={delivery.customerAmount}
+                        onChange={(event) =>
+                          updateNewDelivery(index, "customerAmount", event.target.value)
+                        }
+                        placeholder="z. B. 125,00"
+                      />
+                      <small style={{ display: "block", marginTop: "4px", color: "#4b5563" }}>
+                        Nur für Admin/Disponent sichtbar.
+                      </small>
                     </div>
 
                     {newDeliveries.length >
@@ -10024,6 +10776,26 @@ function App() {
                     <button className="primary-button" disabled={managementSaving} onClick={saveTourChanges}>
                       {managementSaving ? "Speichern..." : "✓ Tour speichern"}
                     </button>
+                    {canManageTours && (
+                      <>
+                        <div style={{width:"100%",marginTop:"12px",padding:"12px",border:"1px solid #d1d5db",borderRadius:"10px"}}>
+                          <strong>Deine Firmendaten für die Rechnung</strong>
+                          <p style={{margin:"6px 0 10px",color:"#64748b",fontSize:"0.9rem"}}>Diese Angaben werden automatisch gespeichert und bei zukünftigen Rechnungen wieder vorausgefüllt.</p>
+                           <div style={{display:"grid",gap:"8px",marginTop:"8px"}}>
+                            <input value={invoiceCompanyName} onChange={(event) => setInvoiceCompanyName(event.target.value)} placeholder="Firmenname" />
+                            <input value={invoiceCompanyAddress} onChange={(event) => setInvoiceCompanyAddress(event.target.value)} placeholder="Firmenanschrift" />
+                            <input value={invoiceCompanyTaxId} onChange={(event) => setInvoiceCompanyTaxId(event.target.value)} placeholder="Steuer-/USt-ID (optional)" />
+                            <label style={{fontWeight:700,fontSize:"14px",marginTop:"2px"}}>Zahlungsziel in Tagen</label>
+                            <input value={invoicePaymentDays} onChange={(event) => setInvoicePaymentDays(event.target.value)} type="number" min="0" placeholder="z. B. 14" aria-label="Zahlungsziel in Tagen" />
+                            <small style={{color:"#64748b"}}>Die Rechnung wird standardmäßig 14 Tage nach dem Rechnungsdatum fällig.</small>
+                            <textarea value={invoiceBankDetails} onChange={(event) => setInvoiceBankDetails(event.target.value)} placeholder="Bankverbindung / Zahlungsinformationen (optional)" rows={3} />
+                          </div>
+                        </div>
+                        <button className="secondary-button" disabled={managementSaving || deliveries.length === 0} onClick={downloadTourInvoicePdf}>
+                          📄 Rechnung als PDF
+                        </button>
+                      </>
+                    )}
                     <button className="secondary-button" disabled={managementSaving} onClick={deleteTour}>🗑 Löschen</button>
                   </div>
                 </div>
@@ -10033,6 +10805,7 @@ function App() {
                     <div>
                       <h2>Lieferungen</h2>
                       <p style={{margin:0}}>{deliveries.length} Lieferung{deliveries.length===1?"":"en"}</p>
+                      <p style={{margin:"4px 0 0",fontWeight:700}}>💶 Tourerlös: {deliveries.reduce((sum, item) => sum + (item.customerAmount != null && Number.isFinite(item.customerAmount) ? item.customerAmount : 0), 0).toFixed(2).replace(".", ",")} €</p>
                     </div>
                     <button className="primary-button" onClick={()=>setAddingManagementDelivery(!addingManagementDelivery)}>
                       {addingManagementDelivery ? "Abbrechen" : "+ Lieferung"}
@@ -10045,6 +10818,7 @@ function App() {
                         <div className="form-group"><label>Kunde</label><input value={managementDeliveryCustomer} onChange={(e)=>setManagementDeliveryCustomer(e.target.value)} /></div>
                         <div className="form-group"><label>Adresse</label><input value={managementDeliveryAddress} onChange={(e)=>setManagementDeliveryAddress(e.target.value)} /></div>
                         <div className="form-group"><label>Zustellzeit</label><input type="time" value={managementDeliveryTime} onChange={(e)=>setManagementDeliveryTime(e.target.value)} /></div>
+                        <div className="form-group"><label>Vom Kunden bezahlt (€)</label><input inputMode="decimal" value={managementDeliveryAmount} onChange={(e)=>setManagementDeliveryAmount(e.target.value)} placeholder="z. B. 125,00" /></div>
                       </div>
                       <button className="primary-button" disabled={managementSaving} onClick={addManagementDeliveryItem}>Lieferung speichern</button>
                     </div>
@@ -10062,6 +10836,7 @@ function App() {
                                 <div className="form-group"><label>Kunde</label><input value={editingDeliveryCustomer} onChange={(e)=>setEditingDeliveryCustomer(e.target.value)} /></div>
                                 <div className="form-group"><label>Adresse</label><input value={editingDeliveryAddress} onChange={(e)=>setEditingDeliveryAddress(e.target.value)} /></div>
                                 <div className="form-group"><label>Zustellzeit</label><input type="time" value={editingDeliveryTime} onChange={(e)=>setEditingDeliveryTime(e.target.value)} /></div>
+                                <div className="form-group"><label>Vom Kunden bezahlt (€)</label><input inputMode="decimal" value={editingDeliveryAmount} onChange={(e)=>setEditingDeliveryAmount(e.target.value)} placeholder="z. B. 125,00" /></div>
                               </div>
                               <div style={{display:"flex",gap:"8px"}}>
                                 <button className="primary-button" disabled={managementSaving} onClick={saveEditedDelivery}>Speichern</button>
@@ -10076,6 +10851,7 @@ function App() {
                                   <strong>{delivery.customer || "Kein Kunde"}</strong>
                                   <div style={{fontSize:"14px",marginTop:"3px"}}>📍 {delivery.address || "Keine Adresse"}</div>
                                   <div style={{fontSize:"14px",marginTop:"3px"}}>🕐 {delivery.plannedTime || "Keine Zeit"} · {delivery.status}</div>
+                                  <div style={{fontSize:"14px",marginTop:"3px",fontWeight:700}}>💶 Kundenbetrag: {delivery.customerAmount != null ? `${delivery.customerAmount.toFixed(2).replace(".", ",")} €` : "Nicht eingetragen"}</div>
                                 </div>
                               </div>
                               <div style={{display:"flex",gap:"6px",flexWrap:"wrap"}}>
@@ -10443,7 +11219,7 @@ function App() {
           <section>
             <div className="card"><h2>Arbeitszeit & Kilometer</h2><p>Arbeitszeiten und gefahrene Kilometer pro Fahrer erfassen.</p>{workMessage&&<div className="success-message">{workMessage}</div>}
               <div style={{display:"grid",gap:"10px",gridTemplateColumns:"repeat(auto-fit,minmax(180px,1fr))"}}>
-                <label>Fahrer<select value={workDriverId} onChange={e=>setWorkDriverId(e.target.value)}><option value="">Fahrer auswählen…</option>{driverProfiles.filter(d=>d.aktiv).map(d=><option key={d.id} value={d.id}>{d.name||d.email}</option>)}</select></label>
+                <label>Fahrer<select value={workDriverId} onChange={e=>setWorkDriverId(e.target.value)}><option value="">Fahrer auswählen…</option>{driverProfiles.filter(d=>d.aktiv).map(d=><option key={d.id} value={d.id}>{(d.name||d.email) + " (" + d.rolle + ")"}</option>)}</select></label>
                 <label>Datum<input type="date" value={workDate} onChange={e=>setWorkDate(e.target.value)}/></label>
                 <label>Arbeitsbeginn<input type="time" value={workStart} onChange={e=>setWorkStart(e.target.value)}/></label>
                 <label>Arbeitsende<input type="time" value={workEnd} onChange={e=>setWorkEnd(e.target.value)}/></label>
@@ -10672,7 +11448,7 @@ function App() {
               <div style={{display:"grid",gap:"10px",gridTemplateColumns:"repeat(auto-fit,minmax(180px,1fr))",marginTop:"16px"}}>
                 <label>Von<input type="date" value={reportStart} onChange={e=>setReportStart(e.target.value)}/></label>
                 <label>Bis<input type="date" value={reportEnd} onChange={e=>setReportEnd(e.target.value)}/></label>
-                {canManageTours && <label>Fahrer<select value={reportDriverId} onChange={e=>setReportDriverId(e.target.value)}><option value="">Alle Fahrer</option>{driverProfiles.filter(d=>d.aktiv).map(d=><option key={d.id} value={d.id}>{d.name||d.email}</option>)}</select></label>}
+                {canManageTours && <label>Mitarbeiter<select value={reportDriverId} onChange={e=>setReportDriverId(e.target.value)}><option value="">Alle Fahrer</option>{driverProfiles.filter(d=>d.aktiv).map(d=><option key={d.id} value={d.id}>{d.name||d.email}</option>)}</select></label>}
               </div>
               <div style={{display:"flex",gap:"8px",flexWrap:"wrap",marginTop:"12px"}}>
                 <button type="button" className="primary-button" onClick={loadReportData}>Auswertung laden</button>
@@ -10695,6 +11471,53 @@ function App() {
                   <div style={{fontSize:"26px"}}>{icon}</div>
                   <strong>{label}</strong>
                   <div style={{fontSize:"25px",fontWeight:800,marginTop:"5px"}}>{reportLoading ? "…" : value}</div>
+                </div>
+              ))}
+            </div>
+
+            <div className="card">
+              <h3>Schichten / Ein- und Ausstichzeiten</h3>
+              {reportShiftRows.length === 0 ? <p>Keine Ein-/Ausstech-Schichten im gewählten Zeitraum.</p> : reportShiftRows.map((row:any) => {
+                const isEditing = editingShiftId === row.id
+                return (
+                  <div key={row.id} style={{borderTop:"1px solid #ddd",padding:"13px 0"}}>
+                    <strong>{reportShiftLine(row)}</strong>
+                    <div style={{ marginTop: "5px" }}>{Number(row.gesamt_km || 0).toLocaleString("de-DE")} km · Status: {row.status || "—"}</div>
+                    {canEditShiftCorrections ? (
+                      <div style={{ marginTop: "10px", padding: "12px", border: "1px solid #cbd5e1", borderRadius: "10px", background: "#f8fafc" }}>
+                        <strong>Arbeitszeit direkt hier korrigieren</strong>
+                        <div style={{display:"grid",gap:"8px",gridTemplateColumns:"repeat(auto-fit,minmax(180px,1fr))",marginTop:"8px"}}>
+                          <label>Einstechzeit<input type="datetime-local" value={isEditing ? editingShiftStart : toDateTimeLocalValue(row.startzeit)} onChange={(e) => { setEditingShiftId(row.id); setEditingShiftStart(e.target.value); if (!isEditing) { setEditingShiftEnd(toDateTimeLocalValue(row.endzeit)); setEditingShiftKm(String(row.gesamt_km || 0)); } }} /></label>
+                          <label>Ausstechzeit<input type="datetime-local" value={isEditing ? editingShiftEnd : toDateTimeLocalValue(row.endzeit)} onChange={(e) => { setEditingShiftId(row.id); setEditingShiftEnd(e.target.value); if (!isEditing) { setEditingShiftStart(toDateTimeLocalValue(row.startzeit)); setEditingShiftKm(String(row.gesamt_km || 0)); } }} /></label>
+                          <label>Gesamtkilometer<input type="number" min="0" value={isEditing ? editingShiftKm : String(row.gesamt_km || 0)} onChange={(e) => { setEditingShiftId(row.id); setEditingShiftKm(e.target.value); if (!isEditing) { setEditingShiftStart(toDateTimeLocalValue(row.startzeit)); setEditingShiftEnd(toDateTimeLocalValue(row.endzeit)); } }} /></label>
+                        </div>
+                        <div style={{ marginTop: "10px", display: "flex", gap: "8px", flexWrap: "wrap" }}>
+                          <button type="button" className="primary-button" onClick={() => saveShiftCorrection(row)}>Speichern</button>
+                          {isEditing && <button type="button" className="secondary-button" onClick={() => { setEditingShiftId(null); setEditingShiftStart(""); setEditingShiftEnd(""); setEditingShiftKm(""); }}>Abbrechen</button>}
+                          <button type="button" className="secondary-button" style={{color:"#b91c1c",borderColor:"#fecaca"}} onClick={() => deleteShift(row)}>🗑️ Löschen</button>
+                        </div>
+                      </div>
+                    ) : (
+                      <div style={{marginTop:"8px",fontSize:"13px",color:"#64748b"}}>Nur Ansicht: Deine Arbeitszeiten können hier eingesehen, aber nicht bearbeitet werden.</div>
+                    )}
+                  </div>
+                )
+              })}
+              {shiftEditMessage && canEditShiftCorrections && <div style={{marginTop:"10px"}} className="info-message">{shiftEditMessage}</div>}
+            </div>
+
+            <div className="card">
+              <h3>Manuell erfasste Arbeitszeiten</h3>
+              {reportWorkRows.length === 0 ? <p>Keine manuell erfassten Arbeitszeiten im gewählten Zeitraum.</p> : reportWorkRows.map((row:any) => (
+                <div key={row.id} style={{borderTop:"1px solid #ddd",padding:"11px 0",display:"flex",justifyContent:"space-between",alignItems:"center",gap:"12px",flexWrap:"wrap"}}>
+                  <div>
+                    <strong>{row.datum} · {row.arbeitsbeginn || "-"} Uhr – {row.arbeitsende || "-"} Uhr · {row.pause_minuten || 0} Min Pause</strong> · {formatMinutes(workMinutes(row as WorkEntry))}
+                  </div>
+                  {canEditShiftCorrections && (
+                    <button type="button" className="secondary-button" style={{color:"#b91c1c",borderColor:"#fecaca"}} onClick={() => deleteWorkEntry(row)}>
+                      🗑️ Löschen
+                    </button>
+                  )}
                 </div>
               ))}
             </div>
