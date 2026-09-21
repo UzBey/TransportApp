@@ -227,6 +227,9 @@ type DriverMessage = {
   gelesen: boolean
   gelesen_am: string | null
   erstellt_am: string
+  antwort_auf_id?: number | null
+  archiviert?: boolean
+  geloescht_am?: string | null
 }
 
 type SopRecord = {
@@ -254,6 +257,34 @@ type SopConfirmation = {
 type AdminSopConfirmation = SopConfirmation & {
   fahrer_name: string
   fahrer_email: string
+}
+
+type AcquisitionContactHistory = {
+  id: number
+  akquise_id: number
+  contact_date: string
+  contact_type: string
+  result: string | null
+  next_follow_up: string | null
+  note: string | null
+  created_at: string
+}
+
+type AcquisitionContact = {
+  id: number
+  firma: string
+  branche: string | null
+  ort: string | null
+  website: string | null
+  ansprechpartner_name: string | null
+  ansprechpartner_position: string | null
+  telefon_zentrale: string | null
+  telefon_direkt: string | null
+  email: string | null
+  status: string
+  notes: string | null
+  next_action: string | null
+  created_at: string
 }
 
 const permissionOptions: { key: PermissionKey; label: string }[] = [
@@ -619,6 +650,7 @@ function App() {
         verwaltung: false,
         auswertung: false,
         einstellungen: false,
+        administration: false,
       });
 
       const toggleMenuSection = (section: string) => {
@@ -637,6 +669,7 @@ function App() {
     | "tour-create"
     | "tour-management"
     | "customers"
+    | "acquisition"
     | "users"
     | "sops"
     | "driver-tours"
@@ -649,6 +682,25 @@ function App() {
     | "warnings"
     | "messages"
   >("dashboard")
+
+  const [acquisitionRows, setAcquisitionRows] = useState<AcquisitionContact[]>([])
+  const [acquisitionLoading, setAcquisitionLoading] = useState(false)
+  const [acquisitionMessage, setAcquisitionMessage] = useState("")
+  const [acquisitionSearch, setAcquisitionSearch] = useState("")
+  const [acquisitionFormOpen, setAcquisitionFormOpen] = useState(false)
+  const [acquisitionEditingId, setAcquisitionEditingId] = useState<number | null>(null)
+  const emptyAcquisitionForm = {
+    firma: "", branche: "", ort: "", website: "",
+    ansprechpartner_name: "", ansprechpartner_position: "",
+    telefon_zentrale: "", telefon_direkt: "", email: "",
+    status: "Potenzial", notes: "", next_action: "Ansprechpartner recherchieren",
+  }
+  const [acquisitionForm, setAcquisitionForm] = useState(emptyAcquisitionForm)
+  const [acquisitionDetailId, setAcquisitionDetailId] = useState<number | null>(null)
+  const [acquisitionHistoryRows, setAcquisitionHistoryRows] = useState<AcquisitionContactHistory[]>([])
+  const [acquisitionHistoryLoading, setAcquisitionHistoryLoading] = useState(false)
+  const [acquisitionHistoryFormOpen, setAcquisitionHistoryFormOpen] = useState(false)
+  const [acquisitionHistoryForm, setAcquisitionHistoryForm] = useState({ contact_date: new Date().toISOString().slice(0, 10), contact_type: "Telefon", result: "", next_follow_up: "", note: "" })
 
   const [cleaningRows, setCleaningRows] = useState<VehicleCleaning[]>([])
   const [cleaningVehicleId, setCleaningVehicleId] = useState("")
@@ -733,6 +785,11 @@ function App() {
   const [messageSaving, setMessageSaving] = useState(false)
   const [messageError, setMessageError] = useState("")
   const [messageSuccess, setMessageSuccess] = useState("")
+  const [selectedMessageId, setSelectedMessageId] = useState<number | null>(null)
+  const [messageFolder, setMessageFolder] = useState<"inbox" | "sent" | "compose">("inbox")
+  const [replyToMessageId, setReplyToMessageId] = useState<number | null>(null)
+  const [messageAttachment, setMessageAttachment] = useState<File | null>(null)
+
 
   const [sops, setSops] = useState<SopRecord[]>([])
   const [sopConfirmations, setSopConfirmations] = useState<SopConfirmation[]>([])
@@ -758,6 +815,27 @@ function App() {
   const isAdmin = normalizedRole === "admin" || normalizedRole === "administrator"
   const isDisponent = normalizedRole === "disponent" || normalizedRole === "dispatcher"
   const canManageSops = isAdmin || isDisponent
+  const activeMessages = driverMessages.filter((message) => !message.archiviert && !message.geloescht_am)
+  const inboxMessages = activeMessages.filter(
+    (message) => message.empfaenger_id === currentUser?.id
+  )
+  const sentMessages = activeMessages
+    .filter((message) => message.absender_id === currentUser?.id)
+    .filter((message, index, all) => {
+      const messageKey = `${message.betreff}|${message.nachricht}|${message.erstellt_am}`
+      return all.findIndex(
+        (candidate) =>
+          `${candidate.betreff}|${candidate.nachricht}|${candidate.erstellt_am}` === messageKey
+      ) === index
+    })
+  const visibleMessages =
+    messageFolder === "sent"
+      ? sentMessages
+      : messageFolder === "compose"
+        ? []
+        : inboxMessages
+  const unreadMessageCount = inboxMessages.filter((message) => !message.gelesen).length
+
 
   function hasPermission(permission: PermissionKey): boolean {
     if (isAdmin) return true
@@ -1081,17 +1159,24 @@ function App() {
   }
 
   async function loadMessageRecipients() {
-    if (!isAdmin && !isDisponent) return
+    if (!currentUser) return
+
+    const allowedRoles: UserRole[] = isAdmin
+      ? ["Fahrer", "Disponent"]
+      : isDisponent
+        ? ["Fahrer", "Admin"]
+        : ["Admin", "Disponent"]
 
     const { data, error } = await supabase
       .from("benutzer")
       .select("id, email, name, rolle, aktiv, freigabestatus")
-      .eq("rolle", "Fahrer")
+      .in("rolle", allowedRoles)
       .eq("aktiv", true)
+      .neq("id", currentUser.id)
       .order("name", { ascending: true })
 
     if (error) {
-      setMessageError(`Fahrer konnten nicht geladen werden: ${error.message}`)
+      setMessageError(`Empfänger konnten nicht geladen werden: ${error.message}`)
       return
     }
 
@@ -1100,7 +1185,12 @@ function App() {
         id: String(row.id),
         email: String(row.email || ""),
         name: String(row.name || ""),
-        rolle: "Fahrer",
+        rolle:
+          row.rolle === "Admin"
+            ? "Admin"
+            : row.rolle === "Disponent"
+              ? "Disponent"
+              : "Fahrer",
         aktiv: row.aktiv !== false,
         freigabestatus:
           row.freigabestatus === "Freigegeben"
@@ -1121,7 +1211,7 @@ function App() {
 
     const { data, error } = await supabase
       .from("fahrer_nachrichten")
-      .select("id, absender_id, empfaenger_id, betreff, nachricht, an_alle, gelesen, gelesen_am, erstellt_am")
+      .select("id, absender_id, empfaenger_id, betreff, nachricht, an_alle, gelesen, gelesen_am, erstellt_am, antwort_auf_id, archiviert, geloescht_am")
       .order("erstellt_am", { ascending: false })
       .limit(100)
 
@@ -1146,7 +1236,7 @@ function App() {
       setMessageError(
         messageAudience === "all"
           ? "Bitte Betreff und Nachricht ausfüllen."
-          : "Bitte Fahrer, Betreff und Nachricht ausfüllen."
+          : "Bitte Empfänger, Betreff und Nachricht ausfüllen."
       )
       setMessageSuccess("")
       return
@@ -1158,8 +1248,14 @@ function App() {
 
     const recipients =
       messageAudience === "all"
-        ? messageRecipients
+        ? messageRecipients.filter((recipient) => recipient.rolle === "Fahrer")
         : messageRecipients.filter((recipient) => recipient.id === messageRecipientId)
+
+    if (messageAudience === "all" && !isAdmin && !isDisponent) {
+      setMessageError("Nur Admin und Disposition dürfen an alle Fahrer schreiben.")
+      setMessageSaving(false)
+      return
+    }
 
     if (recipients.length === 0) {
       setMessageError("Es wurde kein gültiger Empfänger gefunden.")
@@ -1172,9 +1268,10 @@ function App() {
       empfaenger_id: recipient.id,
       betreff: messageSubject.trim(),
       nachricht: messageBody.trim(),
-      an_alle: messageAudience === "all",
+      an_alle: false,
       gelesen: false,
       gelesen_am: null,
+      antwort_auf_id: replyToMessageId,
     }))
 
     const { error } = await supabase
@@ -1193,10 +1290,34 @@ function App() {
       setMessageAudience("single")
       setMessageSubject("")
       setMessageBody("")
+      setReplyToMessageId(null)
+      setMessageAttachment(null)
       await loadDriverMessages()
     }
 
     setMessageSaving(false)
+  }
+
+  function startReply(message: DriverMessage) {
+    setReplyToMessageId(message.id)
+    setMessageFolder("compose")
+    setMessageRecipientId(message.absender_id || "")
+    setMessageSubject(message.betreff.startsWith("Re:") ? message.betreff : `Re: ${message.betreff}`)
+    setMessageBody(`\\n\\n--- Ursprüngliche Nachricht ---\\n${message.nachricht}`)
+  }
+
+  async function archiveDriverMessage(messageId: number) {
+    const { error } = await supabase.from("fahrer_nachrichten").update({ archiviert: true }).eq("id", messageId)
+    if (error) { setMessageError(`Archivieren fehlgeschlagen: ${error.message}`); return }
+    setDriverMessages((old) => old.map((m) => m.id === messageId ? { ...m, archiviert: true } : m))
+    setSelectedMessageId(null)
+  }
+
+  async function deleteDriverMessage(messageId: number) {
+    const { error } = await supabase.from("fahrer_nachrichten").update({ geloescht_am: new Date().toISOString() }).eq("id", messageId)
+    if (error) { setMessageError(`Löschen fehlgeschlagen: ${error.message}`); return }
+    setDriverMessages((old) => old.map((m) => m.id === messageId ? { ...m, geloescht_am: new Date().toISOString() } : m))
+    setSelectedMessageId(null)
   }
 
   async function markDriverMessageAsRead(messageId: number) {
@@ -1245,7 +1366,7 @@ function App() {
 
     setDriverMessages((old) =>
       old.map((message) =>
-        !message.gelesen
+        message.empfaenger_id === currentUser.id && !message.gelesen
           ? { ...message, gelesen: true, gelesen_am: now }
           : message
       )
@@ -1408,10 +1529,27 @@ function App() {
     if (page !== "messages" || !currentUser) return
 
     loadDriverMessages()
-    if (isAdmin || isDisponent) {
-      loadMessageRecipients()
-    }
+    loadMessageRecipients()
   }, [page, currentUser?.id, isAdmin, isDisponent])
+
+  useEffect(() => {
+    if (!currentUser?.id) return
+
+    const channel = supabase
+      .channel("fahrer-nachrichten-live")
+      .on(
+        "postgres_changes",
+        { event: "*", schema: "public", table: "fahrer_nachrichten" },
+        () => {
+          void loadDriverMessages()
+        }
+      )
+      .subscribe()
+
+    return () => {
+      void supabase.removeChannel(channel)
+    }
+  }, [currentUser?.id])
 
   // =====================================================
   // FAHRZEUGE
@@ -7293,6 +7431,139 @@ function App() {
   // NAVIGATION
   // =====================================================
 
+  async function loadAcquisitionHistory() {
+    setAcquisitionHistoryLoading(true)
+    const { data, error } = await supabase
+      .from("akquise_kontaktverlauf")
+      .select("*")
+      .order("contact_date", { ascending: false })
+      .order("created_at", { ascending: false })
+    if (error) {
+      setAcquisitionMessage("Kontaktverlauf konnte nicht geladen werden: " + error.message)
+      setAcquisitionHistoryRows([])
+    } else {
+      setAcquisitionHistoryRows((data || []) as AcquisitionContactHistory[])
+    }
+    setAcquisitionHistoryLoading(false)
+  }
+
+  function resetAcquisitionHistoryForm() {
+    setAcquisitionHistoryForm({ contact_date: new Date().toISOString().slice(0, 10), contact_type: "Telefon", result: "", next_follow_up: "", note: "" })
+  }
+
+  async function saveAcquisitionHistory() {
+    if (!acquisitionDetailId) return
+    if (!acquisitionHistoryForm.note.trim() && !acquisitionHistoryForm.result.trim()) {
+      setAcquisitionMessage("Bitte Ergebnis oder Notiz zum Kontakt eintragen.")
+      return
+    }
+    setAcquisitionHistoryLoading(true)
+    const { error } = await supabase.from("akquise_kontaktverlauf").insert({
+      akquise_id: acquisitionDetailId,
+      ...acquisitionHistoryForm,
+      result: acquisitionHistoryForm.result.trim() || null,
+      next_follow_up: acquisitionHistoryForm.next_follow_up || null,
+      note: acquisitionHistoryForm.note.trim() || null,
+      created_by: session?.user?.id || null,
+    })
+    if (error) {
+      setAcquisitionMessage("Kontakt konnte nicht gespeichert werden: " + error.message)
+    } else {
+      resetAcquisitionHistoryForm()
+      setAcquisitionHistoryFormOpen(false)
+      await loadAcquisitionHistory()
+    }
+    setAcquisitionHistoryLoading(false)
+  }
+
+  async function deleteAcquisitionHistory(id: number) {
+    if (!window.confirm("Diesen Kontaktverlauf wirklich löschen?")) return
+    setAcquisitionHistoryLoading(true)
+    const { error } = await supabase.from("akquise_kontaktverlauf").delete().eq("id", id)
+    if (error) setAcquisitionMessage("Kontaktverlauf konnte nicht gelöscht werden: " + error.message)
+    else await loadAcquisitionHistory()
+    setAcquisitionHistoryLoading(false)
+  }
+
+  async function loadAcquisitionRows() {
+    setAcquisitionLoading(true)
+    const { data, error } = await supabase
+      .from("akquise_kontakte")
+      .select("*")
+      .order("created_at", { ascending: false })
+    if (error) {
+      setAcquisitionMessage("Akquise konnte nicht geladen werden: " + error.message)
+      setAcquisitionRows([])
+    } else {
+      setAcquisitionRows((data || []) as AcquisitionContact[])
+      await loadAcquisitionHistory()
+      setAcquisitionMessage("")
+    }
+    setAcquisitionLoading(false)
+  }
+
+  function openNewAcquisition() {
+    setAcquisitionEditingId(null)
+    setAcquisitionForm(emptyAcquisitionForm)
+    setAcquisitionFormOpen(true)
+    setAcquisitionMessage("")
+  }
+
+  function editAcquisition(row: AcquisitionContact) {
+    setAcquisitionEditingId(row.id)
+    setAcquisitionForm({
+      firma: row.firma || "", branche: row.branche || "", ort: row.ort || "",
+      website: row.website || "", ansprechpartner_name: row.ansprechpartner_name || "",
+      ansprechpartner_position: row.ansprechpartner_position || "",
+      telefon_zentrale: row.telefon_zentrale || "", telefon_direkt: row.telefon_direkt || "",
+      email: row.email || "", status: row.status || "Potenzial",
+      notes: row.notes || "", next_action: row.next_action || "",
+    })
+    setAcquisitionFormOpen(true)
+    setAcquisitionMessage("")
+  }
+
+  async function saveAcquisition() {
+    if (!acquisitionForm.firma.trim()) {
+      setAcquisitionMessage("Bitte mindestens den Firmennamen eintragen.")
+      return
+    }
+    setAcquisitionLoading(true)
+    const payload = { ...acquisitionForm, firma: acquisitionForm.firma.trim(), created_by: session?.user?.id || null }
+    const query = acquisitionEditingId
+      ? supabase.from("akquise_kontakte").update(payload).eq("id", acquisitionEditingId)
+      : supabase.from("akquise_kontakte").insert(payload)
+    const { error } = await query
+    if (error) {
+      setAcquisitionMessage("Speichern fehlgeschlagen: " + error.message)
+    } else {
+      setAcquisitionFormOpen(false)
+      setAcquisitionEditingId(null)
+      setAcquisitionForm(emptyAcquisitionForm)
+      await loadAcquisitionRows()
+    }
+    setAcquisitionLoading(false)
+  }
+
+  async function deleteAcquisition(id: number) {
+    if (!window.confirm("Diesen Akquise-Eintrag wirklich löschen?")) return
+    setAcquisitionLoading(true)
+    const { error } = await supabase.from("akquise_kontakte").delete().eq("id", id)
+    if (error) setAcquisitionMessage("Löschen fehlgeschlagen: " + error.message)
+    else await loadAcquisitionRows()
+    setAcquisitionLoading(false)
+  }
+
+  function acquisitionMissing(row: AcquisitionContact) {
+    const fields = [
+      ["Ansprechpartner", row.ansprechpartner_name],
+      ["Position", row.ansprechpartner_position],
+      ["Direkte Telefonnummer", row.telefon_direkt],
+      ["E-Mail", row.email],
+    ]
+    return fields.filter(([, value]) => !String(value || "").trim()).map(([label]) => label)
+  }
+
   function navigateTo(
     nextPage:
       | "dashboard"
@@ -7303,6 +7574,7 @@ function App() {
       | "tour-create"
       | "tour-management"
       | "customers"
+    | "acquisition"
       | "users"
       | "sops"
       | "driver-tours"
@@ -7324,6 +7596,7 @@ function App() {
       "tour-create": "touren_anlegen",
       "tour-management": "touren_verwalten",
       customers: "kunden",
+      acquisition: "kunden",
       defect: "maengel",
       dispatcher: "touren_verwalten",
       fleet: "fahrzeuge",
@@ -7336,9 +7609,9 @@ function App() {
 
     if (nextPage === "users" && !isAdmin) return
     if (nextPage === "sops" && !currentUser) return
-    if (nextPage === "customers" && !(isAdmin || currentUser?.rolle === "Disponent" || hasPermission("kunden") || hasPermission("touren_verwalten") || hasPermission("touren_anlegen"))) return
+    if ((nextPage === "customers" || nextPage === "acquisition") && !(isAdmin || currentUser?.rolle === "Disponent" || hasPermission("kunden") || hasPermission("touren_verwalten") || hasPermission("touren_anlegen"))) return
     const canOpenReports = nextPage === "reports" && canViewReports
-    if (nextPage !== "users" && nextPage !== "customers" && nextPage !== "sops" && !canOpenReports && requiredPermission[nextPage] && !hasPermission(requiredPermission[nextPage]!)) return
+    if (nextPage !== "users" && nextPage !== "customers" && nextPage !== "acquisition" && nextPage !== "sops" && !canOpenReports && requiredPermission[nextPage] && !hasPermission(requiredPermission[nextPage]!)) return
 
     setPage(nextPage)
 
@@ -7349,8 +7622,9 @@ function App() {
       loadTours()
     }
 
-    if (nextPage === "customers" || nextPage === "tour-create") {
+    if (nextPage === "customers" || nextPage === "acquisition" || nextPage === "tour-create") {
       loadCustomers()
+      if (nextPage === "acquisition") loadAcquisitionRows()
     }
 
     if (nextPage === "dashboard") {
@@ -7364,9 +7638,7 @@ function App() {
 
     if (nextPage === "messages") {
       loadDriverMessages()
-      if (isAdmin || isDisponent) {
-        loadMessageRecipients()
-      }
+      loadMessageRecipients()
     }
 
     if (nextPage === "defect") {
@@ -8072,10 +8344,41 @@ function App() {
       {/* HEADER */}
 
       <header className="header">
-        <div>
-          <h1>TransportApp</h1>
+        <div className="header-brand-mobile">
+          <span className="brand-mark">🚚</span>
+          <div>
+            <h1>TransportApp</h1>
+            <p>Effizient. Sicher. Unterwegs.</p>
+          </div>
         </div>
-
+        <div className="header-search">
+          <span aria-hidden="true">⌕</span>
+          <input type="search" placeholder="Suchen..." aria-label="In der App suchen" />
+        </div>
+        <div className="header-actions">
+          <button
+            type="button"
+            className="header-icon-button header-notification-button"
+            aria-label="Alle Benachrichtigungen öffnen"
+            title="Benachrichtigungen"
+            onClick={() => navigateTo("messages")}
+          >
+            <span aria-hidden="true">🔔</span>
+            {unreadMessageCount > 0 && (
+              <span className="header-notification-badge">{unreadMessageCount}</span>
+            )}
+          </button>
+          <div className="header-profile">
+            <span className="profile-avatar">
+              {(currentUser?.name || currentUser?.email || "U").slice(0, 2).toUpperCase()}
+            </span>
+            <div className="header-profile-text">
+              <strong>{currentUser?.name || currentUser?.email || "Benutzer"}</strong>
+              <small>{currentUser?.rolle || "Mitarbeiter"}</small>
+            </div>
+          </div>
+          <span className="header-chevron">⌄</span>
+        </div>
       </header>
 
       {/* NAVIGATION */}
@@ -8158,19 +8461,6 @@ function App() {
           </button>
         )}
 
-        <button
-          className={
-            page === "tour"
-              ? "nav active"
-              : "nav"
-          }
-          onClick={() =>
-            navigateTo("tour")
-          }
-        >
-          <span style={{ marginRight: "8px" }}>🗺️</span>Tour
-        </button>
-
         {hasPermission("touren") && currentUser.rolle === "Fahrer" && (
           <button
             className={
@@ -8186,6 +8476,8 @@ function App() {
 
         </div>
 
+        {currentUser?.rolle !== "Fahrer" && (
+        <>
         <button
           type="button"
           className="navigation-section-title navigation-section-toggle"
@@ -8197,14 +8489,60 @@ function App() {
         </button>
         <div className={expandedMenuSections.verwaltung ? "navigation-submenu open" : "navigation-submenu"}>
 
-        {(isAdmin || currentUser?.rolle === "Disponent" || hasPermission("kunden") || hasPermission("touren_verwalten") || hasPermission("touren_anlegen")) && (
-          <button
-            className={page === "customers" ? "nav active" : "nav"}
-            onClick={() => navigateTo("customers")}
-          >
-            <span style={{ marginRight: "8px" }}>👥</span>Kunden
-          </button>
-        )}
+        <button
+          type="button"
+          className="navigation-section-title navigation-section-toggle"
+          onClick={() => toggleMenuSection("administration")}
+          aria-expanded={expandedMenuSections.administration}
+        >
+          <span>Verwaltung</span>
+          <span>{expandedMenuSections.administration ? "▾" : "▸"}</span>
+        </button>
+        <div className={expandedMenuSections.administration ? "navigation-submenu open" : "navigation-submenu"}>
+          {(isAdmin || currentUser?.rolle === "Disponent" || hasPermission("kunden") || hasPermission("touren_verwalten") || hasPermission("touren_anlegen")) && (
+            <>
+              <button
+                className={page === "customers" ? "nav active" : "nav"}
+                onClick={() => navigateTo("customers")}
+              >
+                <span style={{ marginRight: "8px" }}>👥</span>Kunden
+              </button>
+              <button
+                className={page === "acquisition" ? "nav active" : "nav"}
+                onClick={() => navigateTo("acquisition")}
+              >
+                <span style={{ marginRight: "8px" }}>🎯</span>Akquise
+              </button>
+            </>
+          )}
+
+          {hasPermission("fahrzeuge") && (
+            <button
+              className={page === "fleet" ? "nav active" : "nav"}
+              onClick={() => navigateTo("fleet")}
+            >
+              <span style={{ marginRight: "8px" }}>🚛</span>Fahrzeugverwaltung
+            </button>
+          )}
+
+          {hasPermission("fahrer") && (
+            <button
+              className={page === "driver-management" ? "nav active" : "nav"}
+              onClick={() => navigateTo("driver-management")}
+            >
+              <span style={{ marginRight: "8px" }}>👨‍✈️</span>Fahrer & Personal
+            </button>
+          )}
+
+          {isAdmin && (
+            <button
+              className={page === "users" ? "nav active" : "nav"}
+              onClick={() => navigateTo("users")}
+            >
+              <span style={{ marginRight: "8px" }}>⚙️</span>Benutzer & Berechtigungen
+            </button>
+          )}
+        </div>
 
         {hasPermission("touren_anlegen") && (
           <>
@@ -8249,28 +8587,9 @@ function App() {
           </button>
         )}
 
-        {hasPermission("fahrzeuge") && (
-          <button
-            className={page === "fleet" ? "nav active" : "nav"}
-            onClick={() => navigateTo("fleet")}
-          >
-            <span style={{ marginRight: "8px" }}>🚛</span>Fahrzeugverwaltung
-          </button>
-        )}
-
-        {hasPermission("fahrer") && (
-          <>
-            <button
-              className={page === "driver-management" ? "nav active" : "nav"}
-              onClick={() => navigateTo("driver-management")}
-            >
-              <span style={{ marginRight: "8px" }}>👨‍✈️</span>Fahrer & Personal
-            </button>
-
-          </>
-        )}
-
         </div>
+        </>
+        )}
 
         <button
           type="button"
@@ -8329,18 +8648,10 @@ function App() {
           onClick={() => navigateTo("messages")}
         >
           <span style={{ marginRight: "8px" }}>✉️</span>Nachrichten
-          {driverMessages.filter(
-            (message) =>
-              !message.gelesen &&
-              message.empfaenger_id === currentUser?.id
-          ).length > 0 && (
+          {unreadMessageCount > 0 && (
             <span className="defect-badges">
               <span className="defect-badge urgent">
-                {driverMessages.filter(
-                  (message) =>
-                    !message.gelesen &&
-                    message.empfaenger_id === currentUser?.id
-                ).length}
+                {unreadMessageCount}
               </span>
             </span>
           )}
@@ -8353,19 +8664,7 @@ function App() {
           <span style={{ marginRight: "8px" }}>📚</span>SOP & Schulungen
         </button>
 
-        {isAdmin && (
-          <button
-            className={
-              page === "users"
-                ? "nav active"
-                : "nav"
-            }
-            onClick={() => navigateTo("users")}
-          >
-            <span style={{ marginRight: "8px" }}>⚙️</span>Benutzer & Berechtigungen
-          </button>
-        )}
-        
+
 </div>
 
         <button
@@ -8386,80 +8685,155 @@ function App() {
           <section>
             <div className="card">
               <h2>✉️ Nachrichten</h2>
-              <p>Hier kannst du Nachrichten an Fahrer senden und deine erhaltenen Nachrichten lesen.</p>
+              <p>
+                Dein Nachrichtenpostfach für Fahrer, Disposition und Administration.
+                Du kannst nur an die für deine Rolle freigegebenen Empfänger schreiben.
+              </p>
+
+              <div
+                style={{
+                  display: "flex",
+                  gap: "8px",
+                  flexWrap: "wrap",
+                  marginBottom: "18px",
+                }}
+              >
+                <button
+                  type="button"
+                  onClick={() => setMessageFolder("inbox")}
+                  style={{
+                    fontWeight: messageFolder === "inbox" ? "700" : "400",
+                    background: messageFolder === "inbox" ? "#dbeafe" : "#ffffff",
+                  }}
+                >
+                  📥 Posteingang {unreadMessageCount > 0 ? `(${unreadMessageCount})` : ""}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setMessageFolder("sent")}
+                  style={{
+                    fontWeight: messageFolder === "sent" ? "700" : "400",
+                    background: messageFolder === "sent" ? "#dbeafe" : "#ffffff",
+                  }}
+                >
+                  📤 Gesendet
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setMessageFolder("compose")}
+                  style={{
+                    fontWeight: messageFolder === "compose" ? "700" : "400",
+                    background: messageFolder === "compose" ? "#dbeafe" : "#ffffff",
+                  }}
+                >
+                  ✍️ Neue Nachricht
+                </button>
+              </div>
 
               {messageError && <p className="error-message">{messageError}</p>}
               {messageSuccess && <p className="success-message">{messageSuccess}</p>}
 
-              {(isAdmin || isDisponent) && (
+              {messageFolder === "compose" && (
                 <div className="card" style={{ marginBottom: "20px" }}>
-                  <h3>Nachricht an Fahrer senden</h3>
+                  <h3>Neue Nachricht</h3>
 
+                {(isAdmin || isDisponent) && (
                   <label>
-                    Empfänger
+                    Versandart
                     <select
                       value={messageAudience}
                       onChange={(event) => {
                         const value = event.target.value as "single" | "all"
                         setMessageAudience(value)
-                        if (value === "all") setMessageRecipientId("")
+                        setMessageRecipientId("")
                       }}
                     >
-                      <option value="single">Einzelnen Fahrer</option>
-                      <option value="all">Alle aktiven Fahrer</option>
+                      <option value="single">Einzelner Empfänger</option>
+                      <option value="all">An alle aktiven Fahrer</option>
                     </select>
                   </label>
+                )}
 
-                  {messageAudience === "single" && (
-                    <label>
-                      Fahrer
-                      <select
-                        value={messageRecipientId}
-                        onChange={(event) => setMessageRecipientId(event.target.value)}
-                      >
-                        <option value="">Fahrer auswählen</option>
-                        {messageRecipients.map((recipient) => (
-                          <option key={recipient.id} value={recipient.id}>
-                            {recipient.name} – {recipient.email}
-                          </option>
-                        ))}
-                      </select>
-                    </label>
-                  )}
-
+                {messageAudience === "single" && (
                   <label>
-                    Betreff
-                    <input
-                      type="text"
-                      value={messageSubject}
-                      onChange={(event) => setMessageSubject(event.target.value)}
-                      placeholder="Betreff der Nachricht"
-                    />
+                    Empfänger
+                    <select
+                      value={messageRecipientId}
+                      onChange={(event) => setMessageRecipientId(event.target.value)}
+                    >
+                      <option value="">Empfänger auswählen</option>
+                      {messageRecipients.map((recipient) => (
+                        <option key={recipient.id} value={recipient.id}>
+                          {recipient.name || recipient.email} · {recipient.rolle}
+                        </option>
+                      ))}
+                    </select>
                   </label>
+                )}
 
-                  <label>
-                    Nachricht
-                    <textarea
-                      value={messageBody}
-                      onChange={(event) => setMessageBody(event.target.value)}
-                      placeholder="Nachricht eingeben"
-                      rows={5}
-                    />
-                  </label>
+                {messageAudience === "all" && (
+                  <p style={{ fontSize: "14px", color: "#475569" }}>
+                    Die Nachricht wird an jeden aktiven Fahrer einzeln zugestellt.
+                  </p>
+                )}
 
-                  <button type="button" onClick={sendDriverMessage} disabled={messageSaving}>
-                    {messageSaving ? "Wird gesendet..." : "Nachricht senden"}
-                  </button>
+                <label>
+                  Betreff
+                  <input
+                    type="text"
+                    value={messageSubject}
+                    onChange={(event) => setMessageSubject(event.target.value)}
+                    placeholder="Betreff der Nachricht"
+                  />
+                </label>
+
+                <label>
+                  Nachricht
+                  <textarea
+                    value={messageBody}
+                    onChange={(event) => setMessageBody(event.target.value)}
+                    placeholder="Nachricht eingeben"
+                    rows={5}
+                  />
+                </label>
+                <label>
+                  Anhang (optional)
+                  <input type="file" onChange={(event) => setMessageAttachment(event.target.files?.[0] || null)} />
+                  {messageAttachment && <small>{messageAttachment.name} – Upload-Verknüpfung kann nach Storage-Einrichtung ergänzt werden.</small>}
+                </label>
+
+                <button
+                  type="button"
+                  onClick={sendDriverMessage}
+                  disabled={messageSaving || (messageAudience === "single" && !messageRecipientId)}
+                >
+                  {messageSaving ? "Wird gesendet..." : "Nachricht senden"}
+                </button>
                 </div>
               )}
 
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: "12px", flexWrap: "wrap" }}>
-                <h3>{isAdmin || isDisponent ? "Nachrichtenübersicht" : "Meine Nachrichten"}</h3>
+              <div
+                style={{
+                  display: "flex",
+                  justifyContent: "space-between",
+                  alignItems: "center",
+                  gap: "12px",
+                  flexWrap: "wrap",
+                }}
+              >
+                <h3>
+                  {messageFolder === "sent"
+                    ? "Gesendet"
+                    : messageFolder === "compose"
+                      ? "Nachrichten"
+                      : "Posteingang"}
+                </h3>
                 <button type="button" onClick={loadDriverMessages} disabled={messageLoading}>
-                  {messageLoading ? "Wird geladen..." : "Nachrichten aktualisieren"}
+                  {messageLoading ? "Wird geladen..." : "Aktualisieren"}
                 </button>
               </div>
-              {!isAdmin && !isDisponent && driverMessages.some((message) => !message.gelesen) && (
+
+              {messageFolder === "inbox" && unreadMessageCount > 0 && (
                 <button type="button" onClick={markAllDriverMessagesAsRead}>
                   Alle als gelesen markieren
                 </button>
@@ -8467,42 +8841,134 @@ function App() {
 
               {messageLoading && <p>Nachrichten werden geladen...</p>}
 
-              {!messageLoading && driverMessages.length === 0 && (
+              {!messageLoading && visibleMessages.length === 0 && (
                 <p>Keine Nachrichten vorhanden.</p>
               )}
 
-              {!messageLoading && driverMessages.length > 0 && (
-                <div>
-                  {driverMessages.map((message) => (
-                    <article
-                      key={message.id}
-                      className="card"
-                      style={{
-                        marginBottom: "12px",
-                        borderLeft: message.gelesen ? "4px solid #9ca3af" : "4px solid #2563eb",
-                      }}
-                    >
-                      <div style={{ display: "flex", justifyContent: "space-between", gap: "12px", flexWrap: "wrap" }}>
-                        <strong>{message.betreff}</strong>
-                        <span>{new Date(message.erstellt_am).toLocaleString("de-DE")}</span>
-                      </div>
-                      <p style={{ whiteSpace: "pre-wrap" }}>{message.nachricht}</p>
-                      <small>
-                        Status: {message.gelesen ? "Gelesen" : "Ungelesen"}
-                      </small>
-
-                      {currentUser?.rolle === "Fahrer" && !message.gelesen && (
-                        <div style={{ marginTop: "10px" }}>
-                          <button
-                            type="button"
-                            onClick={() => markDriverMessageAsRead(message.id)}
-                          >
-                            Als gelesen markieren
-                          </button>
+              {!messageLoading && visibleMessages.length > 0 && (
+                <div
+                  style={{
+                    display: "grid",
+                    gridTemplateColumns: "minmax(220px, 0.9fr) minmax(280px, 1.4fr)",
+                    gap: "16px",
+                    alignItems: "start",
+                  }}
+                >
+                  <div>
+                    {visibleMessages.map((message) => (
+                      <button
+                        key={message.id}
+                        type="button"
+                        onClick={() => {
+                          setSelectedMessageId(message.id)
+                          if (
+                            messageFolder === "inbox" &&
+                            !message.gelesen &&
+                            message.empfaenger_id === currentUser?.id
+                          ) {
+                            markDriverMessageAsRead(message.id)
+                          }
+                        }}
+                        style={{
+                          width: "100%",
+                          textAlign: "left",
+                          padding: "12px",
+                          marginBottom: "8px",
+                          borderRadius: "10px",
+                          border: selectedMessageId === message.id
+                            ? "2px solid #2563eb"
+                            : "1px solid #d1d5db",
+                          background: message.gelesen ? "#ffffff" : "#eff6ff",
+                          cursor: "pointer",
+                        }}
+                      >
+                        <div style={{ display: "flex", justifyContent: "space-between", gap: "8px" }}>
+                          <strong>{message.betreff}</strong>
+                          {messageFolder === "inbox" && !message.gelesen && (
+                            <span aria-label="Ungelesen">●</span>
+                          )}
                         </div>
-                      )}
-                    </article>
-                  ))}
+                        <div style={{ fontSize: "13px", marginTop: "5px" }}>
+                          {new Date(message.erstellt_am).toLocaleString("de-DE")}
+                        </div>
+                        <div
+                          style={{
+                            fontSize: "13px",
+                            marginTop: "5px",
+                            fontWeight:
+                              messageFolder === "inbox" && !message.gelesen
+                                ? "bold"
+                                : "normal",
+                          }}
+                        >
+                          {messageFolder === "sent" ? "Gesendet" : "Eingang"}
+                        </div>
+                      </button>
+                    ))}
+                  </div>
+
+                  <div className="card" style={{ minHeight: "220px", margin: 0 }}>
+                    {(() => {
+                      const selectedMessage =
+                        visibleMessages.find((message) => message.id === selectedMessageId) ||
+                        visibleMessages[0]
+
+                      if (!selectedMessage) {
+                        return <p>Wähle eine Nachricht aus.</p>
+                      }
+
+                      return (
+                        <>
+                          <div
+                            style={{
+                              display: "flex",
+                              justifyContent: "space-between",
+                              gap: "12px",
+                              flexWrap: "wrap",
+                            }}
+                          >
+                            <h3 style={{ marginTop: 0 }}>{selectedMessage.betreff}</h3>
+                            <span style={{ fontSize: "13px" }}>
+                              {new Date(selectedMessage.erstellt_am).toLocaleString("de-DE")}
+                            </span>
+                          </div>
+                          <p style={{ fontSize: "13px", color: "#475569" }}>
+                            {messageFolder === "sent"
+                              ? "Gesendete Nachricht"
+                              : "Eingegangene Nachricht"}
+                          </p>
+                          <div
+                            style={{
+                              whiteSpace: "pre-wrap",
+                              lineHeight: 1.6,
+                              borderTop: "1px solid #e5e7eb",
+                              paddingTop: "14px",
+                            }}
+                          >
+                            {selectedMessage.nachricht}
+                          </div>
+                          {messageFolder === "inbox" &&
+                            !selectedMessage.gelesen &&
+                            selectedMessage.empfaenger_id === currentUser?.id && (
+                              <button
+                                type="button"
+                                onClick={() => markDriverMessageAsRead(selectedMessage.id)}
+                                style={{ marginTop: "18px" }}
+                              >
+                                Als gelesen markieren
+                              </button>
+                            )}
+                          <div style={{ display: "flex", gap: "8px", flexWrap: "wrap", marginTop: "18px" }}>
+                            {messageFolder === "inbox" && (
+                              <button type="button" onClick={() => startReply(selectedMessage)}>↩️ Antworten</button>
+                            )}
+                            <button type="button" onClick={() => archiveDriverMessage(selectedMessage.id)}>🗃️ Archivieren</button>
+                            <button type="button" onClick={() => deleteDriverMessage(selectedMessage.id)}>🗑️ Löschen</button>
+                          </div>
+                        </>
+                      )
+                    })()}
+                  </div>
                 </div>
               )}
             </div>
@@ -8584,10 +9050,10 @@ function App() {
         ================================================= */}
 
         {page === "dashboard" && (
-          <section>
+          <section className="dashboard-page">
 
             <div
-              className="card"
+              className="card dashboard-stats-card"
               style={{
                 display: currentUser.rolle === "Fahrer" ? "none" : undefined,
               }}
@@ -8804,7 +9270,7 @@ function App() {
             </div>
 
             {canManageTours && (
-              <div className="card" style={{ marginTop: "16px" }}>
+              <div className="card dashboard-maintenance-card" style={{ marginTop: "16px" }}>
                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: "12px", flexWrap: "wrap" }}>
                   <div>
                     <h2 style={{ marginBottom: "4px" }}>🔧 Wartungswarnungen</h2>
@@ -9128,7 +9594,7 @@ function App() {
               </div>
 
             <div
-              className="card"
+              className="card dashboard-check-card"
               style={{
                 display: currentUser.rolle === "Fahrer" ? "none" : undefined,
               }}
@@ -9203,7 +9669,7 @@ function App() {
             </div>
 
             <div
-              className="card"
+              className="card dashboard-tour-card"
               style={{
                 display: currentUser.rolle === "Fahrer" ? "none" : undefined,
               }}
@@ -9450,7 +9916,7 @@ function App() {
 
 
             {canManageTours && (
-              <div className="card" style={{marginTop:"16px"}}>
+              <div className="card dashboard-central-warnings" style={{marginTop:"16px"}}>
                 <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",gap:"12px",flexWrap:"wrap"}}>
                   <div>
                     <h3 style={{marginBottom:"4px"}}>🔔 Zentrale Warnungen</h3>
@@ -10596,6 +11062,215 @@ function App() {
         {/* =================================================
             KUNDENVERWALTUNG
         ================================================= */}
+
+        {page === "acquisition" && (() => {
+          const filteredAcquisitions = acquisitionRows.filter((row) =>
+            `${row.firma} ${row.ort || ""} ${row.ansprechpartner_name || ""} ${row.status || ""}`
+              .toLowerCase()
+              .includes(acquisitionSearch.trim().toLowerCase())
+          )
+          const selectedAcquisition = acquisitionRows.find((row) => row.id === acquisitionDetailId) || null
+          const statusColors: Record<string, { background: string; color: string }> = {
+            "Potenzial": { background: "#eef2ff", color: "#4338ca" },
+            "Recherche läuft": { background: "#fff7ed", color: "#c2410c" },
+            "Kontakt geplant": { background: "#eff6ff", color: "#1d4ed8" },
+            "Kontaktiert": { background: "#f0fdf4", color: "#15803d" },
+            "Gespräch": { background: "#ecfdf5", color: "#047857" },
+            "Kein Bedarf": { background: "#f3f4f6", color: "#6b7280" },
+            "Kunde gewonnen": { background: "#dcfce7", color: "#166534" },
+          }
+          const getCompletion = (row: AcquisitionContact) => {
+            const fields = [row.firma, row.branche, row.ort, row.website, row.ansprechpartner_name, row.ansprechpartner_position, row.telefon_zentrale, row.telefon_direkt, row.email]
+            return Math.round((fields.filter((value) => String(value || "").trim()).length / fields.length) * 100)
+          }
+          const detailMissing = selectedAcquisition ? acquisitionMissing(selectedAcquisition) : []
+          const today = new Date().toISOString().slice(0, 10)
+          const followUpRows = acquisitionHistoryRows
+            .filter((item) => item.next_follow_up)
+            .map((item) => ({
+              ...item,
+              company: acquisitionRows.find((row) => row.id === item.akquise_id)?.firma || "Unbekannte Firma",
+            }))
+            .sort((a, b) => String(a.next_follow_up).localeCompare(String(b.next_follow_up)))
+          const overdueFollowUps = followUpRows.filter((item) => String(item.next_follow_up) < today)
+          const todayFollowUps = followUpRows.filter((item) => String(item.next_follow_up) === today)
+          const upcomingFollowUps = followUpRows.filter((item) => String(item.next_follow_up) > today)
+          return (
+            <section className="page-section">
+              <div className="page-header" style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-end", gap: "18px", flexWrap: "wrap" }}>
+                <div>
+                  <div style={{ color: "#64748b", fontSize: "12px", fontWeight: 800, letterSpacing: "0.12em", textTransform: "uppercase", marginBottom: "8px" }}>Vertrieb · Pipeline</div>
+                  <h2 style={{ marginBottom: "6px" }}>Akquise</h2>
+                  <p style={{ maxWidth: "720px", margin: 0 }}>Firmen sammeln, Ansprechpartner recherchieren und jeden nächsten Schritt sauber dokumentieren.</p>
+                </div>
+                <button className="primary-button" onClick={openNewAcquisition}>＋ Firma hinzufügen</button>
+              </div>
+
+              {acquisitionMessage && <p className="error">{acquisitionMessage}</p>}
+
+              <div className="card" style={{ margin: "22px 0", border: "1px solid #dbeafe", background: "#f8fbff" }}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: "12px", flexWrap: "wrap" }}>
+                  <div>
+                    <div style={{ color: "#64748b", fontSize: "12px", fontWeight: 800, letterSpacing: "0.1em", textTransform: "uppercase" }}>Arbeitsliste</div>
+                    <h3 style={{ margin: "4px 0" }}>Nachfassübersicht</h3>
+                    <p style={{ margin: 0, color: "#64748b" }}>Alle geplanten Rückrufe aus deiner Kontakt-Historie.</p>
+                  </div>
+                  <span style={{ fontSize: "24px" }}>📅</span>
+                </div>
+                <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))", gap: "10px", marginTop: "14px" }}>
+                  <div style={{ background: "#fff1f2", border: "1px solid #fecdd3", borderRadius: "12px", padding: "14px" }}><div style={{ color: "#be123c", fontSize: "12px", fontWeight: 800 }}>ÜBERFÄLLIG</div><strong style={{ fontSize: "28px", color: "#be123c" }}>{overdueFollowUps.length}</strong></div>
+                  <div style={{ background: "#fffbeb", border: "1px solid #fde68a", borderRadius: "12px", padding: "14px" }}><div style={{ color: "#b45309", fontSize: "12px", fontWeight: 800 }}>HEUTE</div><strong style={{ fontSize: "28px", color: "#b45309" }}>{todayFollowUps.length}</strong></div>
+                  <div style={{ background: "#eff6ff", border: "1px solid #bfdbfe", borderRadius: "12px", padding: "14px" }}><div style={{ color: "#1d4ed8", fontSize: "12px", fontWeight: 800 }}>KOMMEND</div><strong style={{ fontSize: "28px", color: "#1d4ed8" }}>{upcomingFollowUps.length}</strong></div>
+                </div>
+                {followUpRows.length === 0 ? <p style={{ color: "#64748b", marginBottom: 0 }}>Noch keine Nachfassaktionen geplant.</p> : (
+                  <div style={{ display: "grid", gap: "8px", marginTop: "14px" }}>
+                    {followUpRows.slice(0, 8).map((item) => {
+                      const overdue = String(item.next_follow_up) < today
+                      const todayItem = String(item.next_follow_up) === today
+                      return <button key={item.id} className="secondary-button" style={{ textAlign: "left", display: "flex", justifyContent: "space-between", alignItems: "center", gap: "12px", flexWrap: "wrap", borderColor: overdue ? "#fecdd3" : todayItem ? "#fde68a" : "#dbeafe" }} onClick={() => setAcquisitionDetailId(item.akquise_id)}>
+                        <span><strong>{item.company}</strong><br /><small>{item.contact_type} · {item.result || item.note || "Kontakt"}</small></span>
+                        <span style={{ color: overdue ? "#be123c" : todayItem ? "#b45309" : "#1d4ed8", fontWeight: 800 }}>{overdue ? "Überfällig · " : todayItem ? "Heute · " : ""}{item.next_follow_up}</span>
+                      </button>
+                    })}
+                    {followUpRows.length > 8 && <small style={{ color: "#64748b" }}>Es werden die ersten 8 Nachfassaktionen angezeigt.</small>}
+                  </div>
+                )}
+              </div>
+
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))", gap: "12px", margin: "22px 0" }}>
+                {[
+                  ["Alle Firmen", acquisitionRows.length, "#1e293b"],
+                  ["Recherche offen", acquisitionRows.filter((row) => acquisitionMissing(row).length > 0).length, "#c2410c"],
+                  ["Kontakt geplant", acquisitionRows.filter((row) => row.status === "Kontakt geplant").length, "#1d4ed8"],
+                  ["Gewonnen", acquisitionRows.filter((row) => row.status === "Kunde gewonnen").length, "#15803d"],
+                ].map(([label, value, color]) => (
+                  <div key={String(label)} className="card" style={{ padding: "18px 20px", margin: 0 }}>
+                    <div style={{ color: "#64748b", fontSize: "13px", fontWeight: 700 }}>{label}</div>
+                    <div style={{ fontSize: "30px", fontWeight: 800, color: String(color), marginTop: "5px" }}>{value}</div>
+                  </div>
+                ))}
+              </div>
+
+              <div className="card" style={{ marginBottom: "18px", padding: "16px 18px" }}>
+                <label style={{ display: "block", fontWeight: 700, color: "#334155" }}>
+                  Suche in deiner Akquise-Pipeline
+                  <input style={{ marginTop: "8px" }} value={acquisitionSearch} onChange={(e) => setAcquisitionSearch(e.target.value)} placeholder="Firma, Ort, Ansprechpartner oder Status ..." />
+                </label>
+              </div>
+
+              {acquisitionFormOpen && (
+                <div className="card" style={{ marginBottom: "20px", border: "1px solid #cbd5e1", boxShadow: "0 12px 30px rgba(15,23,42,0.08)" }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: "12px", marginBottom: "18px" }}>
+                    <div>
+                      <div style={{ color: "#64748b", fontSize: "12px", fontWeight: 800, letterSpacing: "0.08em", textTransform: "uppercase" }}>Datensatz</div>
+                      <h3 style={{ margin: "5px 0 0" }}>{acquisitionEditingId ? "Firma bearbeiten" : "Neue Firma erfassen"}</h3>
+                    </div>
+                    <button className="secondary-button" onClick={() => setAcquisitionFormOpen(false)}>Schließen</button>
+                  </div>
+                  <div className="form-grid">
+                    {([
+                      ["firma", "Firmenname *"], ["branche", "Branche"], ["ort", "Ort / Region"], ["website", "Website"],
+                      ["ansprechpartner_name", "Ansprechpartner"], ["ansprechpartner_position", "Position / Zuständigkeit"],
+                      ["telefon_zentrale", "Zentrale Telefonnummer"], ["telefon_direkt", "Direkte Telefonnummer"], ["email", "E-Mail"], ["next_action", "Nächste Aktion"],
+                    ] as [keyof typeof acquisitionForm, string][]).map(([key, label]) => (
+                      <label key={key}>{label}
+                        <input value={acquisitionForm[key]} onChange={(e) => setAcquisitionForm((old) => ({ ...old, [key]: e.target.value }))} />
+                      </label>
+                    ))}
+                    <label>Status
+                      <select value={acquisitionForm.status} onChange={(e) => setAcquisitionForm((old) => ({ ...old, status: e.target.value }))}>
+                        <option>Potenzial</option><option>Recherche läuft</option><option>Kontakt geplant</option><option>Kontaktiert</option><option>Gespräch</option><option>Kein Bedarf</option><option>Kunde gewonnen</option>
+                      </select>
+                    </label>
+                    <label style={{ gridColumn: "1 / -1" }}>Notizen / Recherche
+                      <textarea rows={5} value={acquisitionForm.notes} onChange={(e) => setAcquisitionForm((old) => ({ ...old, notes: e.target.value }))} placeholder="Wo recherchiert? Welche Nummer angerufen? Wer war nicht zuständig? Was fehlt noch?" />
+                    </label>
+                  </div>
+                  <div style={{ display: "flex", gap: "10px", marginTop: "18px", flexWrap: "wrap" }}>
+                    <button className="primary-button" disabled={acquisitionLoading} onClick={saveAcquisition}>{acquisitionLoading ? "Speichert..." : "Speichern"}</button>
+                    <button className="secondary-button" onClick={() => setAcquisitionFormOpen(false)}>Abbrechen</button>
+                  </div>
+                </div>
+              )}
+
+              {acquisitionLoading && acquisitionRows.length === 0 ? <p>Akquise wird geladen...</p> : null}
+              {!acquisitionLoading && filteredAcquisitions.length === 0 && <div className="card"><p>Noch keine passenden potenziellen Kunden erfasst.</p></div>}
+
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(300px, 1fr))", gap: "16px" }}>
+                {filteredAcquisitions.map((row) => {
+                  const missing = acquisitionMissing(row)
+                  const completion = getCompletion(row)
+                  const badge = statusColors[row.status] || statusColors.Potenzial
+                  return (
+                    <article className="card" key={row.id} style={{ margin: 0, padding: "20px", display: "flex", flexDirection: "column", gap: "14px", border: "1px solid #e2e8f0" }}>
+                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: "12px" }}>
+                        <div>
+                          <h3 style={{ margin: 0, fontSize: "20px" }}>{row.firma}</h3>
+                          <div style={{ color: "#64748b", marginTop: "5px", fontSize: "14px" }}>{[row.branche, row.ort].filter(Boolean).join(" · ") || "Branche und Ort ergänzen"}</div>
+                        </div>
+                        <span style={{ background: badge.background, color: badge.color, padding: "6px 9px", borderRadius: "999px", fontSize: "12px", fontWeight: 800, whiteSpace: "nowrap" }}>{row.status}</span>
+                      </div>
+                      <div>
+                        <div style={{ display: "flex", justifyContent: "space-between", fontSize: "12px", fontWeight: 700, color: "#64748b", marginBottom: "6px" }}><span>Informationsstand</span><span>{completion}%</span></div>
+                        <div style={{ height: "8px", background: "#e2e8f0", borderRadius: "999px", overflow: "hidden" }}><div style={{ width: `${completion}%`, height: "100%", background: completion >= 80 ? "#16a34a" : completion >= 45 ? "#f59e0b" : "#64748b", borderRadius: "999px" }} /></div>
+                      </div>
+                      <div style={{ display: "grid", gap: "8px", fontSize: "14px" }}>
+                        <div><strong>Ansprechpartner:</strong> {row.ansprechpartner_name || "Noch nicht bekannt"}</div>
+                        <div><strong>Telefon:</strong> {row.telefon_direkt || row.telefon_zentrale || "Noch nicht vorhanden"}</div>
+                        <div><strong>Nächste Aktion:</strong> {row.next_action || "Noch festlegen"}</div>
+                      </div>
+                      <div style={{ background: missing.length ? "#fff7ed" : "#f0fdf4", color: missing.length ? "#9a3412" : "#166534", padding: "11px 12px", borderRadius: "10px", fontSize: "13px" }}><strong>{missing.length ? `${missing.length} Informationen fehlen` : "Wichtige Kontaktdaten vorhanden"}</strong><div style={{ marginTop: "4px" }}>{missing.length ? missing.join(" · ") : "Du kannst den Datensatz jetzt weiter qualifizieren."}</div></div>
+                      <div style={{ display: "flex", gap: "8px", flexWrap: "wrap", marginTop: "auto" }}>
+                        <button className="primary-button" onClick={() => setAcquisitionDetailId(row.id)}>Details öffnen</button>
+                        <button className="secondary-button" onClick={() => editAcquisition(row)}>Bearbeiten</button>
+                      </div>
+                    </article>
+                  )
+                })}
+              </div>
+
+              {selectedAcquisition && (
+                <div style={{ position: "fixed", inset: 0, background: "rgba(15,23,42,0.48)", zIndex: 1000, padding: "24px", overflowY: "auto" }} onClick={() => setAcquisitionDetailId(null)}>
+                  <div className="card" style={{ maxWidth: "980px", margin: "20px auto", padding: "28px", boxShadow: "0 24px 70px rgba(15,23,42,0.24)" }} onClick={(event) => event.stopPropagation()}>
+                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: "16px" }}>
+                      <div><div style={{ color: "#64748b", fontSize: "12px", fontWeight: 800, letterSpacing: "0.1em", textTransform: "uppercase" }}>Akquise-Detailansicht</div><h2 style={{ margin: "6px 0" }}>{selectedAcquisition.firma}</h2><p style={{ margin: 0, color: "#64748b" }}>{[selectedAcquisition.branche, selectedAcquisition.ort].filter(Boolean).join(" · ") || "Keine Zusatzangaben"}</p></div>
+                      <button className="secondary-button" onClick={() => setAcquisitionDetailId(null)}>✕ Schließen</button>
+                    </div>
+                    <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(210px, 1fr))", gap: "12px", margin: "22px 0" }}>
+                      {[
+                        ["Status", selectedAcquisition.status], ["Ansprechpartner", selectedAcquisition.ansprechpartner_name || "Fehlt"], ["Position", selectedAcquisition.ansprechpartner_position || "Fehlt"], ["Zentrale", selectedAcquisition.telefon_zentrale || "Fehlt"], ["Direkte Nummer", selectedAcquisition.telefon_direkt || "Fehlt"], ["E-Mail", selectedAcquisition.email || "Fehlt"], ["Website", selectedAcquisition.website || "Fehlt"], ["Nächste Aktion", selectedAcquisition.next_action || "Noch offen"],
+                      ].map(([label, value]) => <div key={label} style={{ background: "#f8fafc", border: "1px solid #e2e8f0", borderRadius: "12px", padding: "13px" }}><div style={{ color: "#64748b", fontSize: "12px", fontWeight: 800 }}>{label}</div><div style={{ marginTop: "5px", fontWeight: 700, overflowWrap: "anywhere" }}>{value}</div></div>)}
+                    </div>
+                    <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))", gap: "16px" }}>
+                      <div style={{ border: "1px solid #e2e8f0", borderRadius: "14px", padding: "18px" }}><h3 style={{ marginTop: 0 }}>Was fehlt noch?</h3>{detailMissing.length ? <ul style={{ marginBottom: 0 }}>{detailMissing.map((item) => <li key={item} style={{ marginBottom: "7px" }}>{item}</li>)}</ul> : <p>Die wichtigsten Kontaktdaten sind erfasst.</p>}</div>
+                      <div style={{ border: "1px solid #e2e8f0", borderRadius: "14px", padding: "18px" }}><h3 style={{ marginTop: 0 }}>Wo recherchieren?</h3><ul style={{ marginBottom: 0 }}><li>Unternehmenswebsite und Impressum</li><li>LinkedIn / Unternehmensprofile</li><li>Zentrale anrufen und Zuständigkeit erfragen</li><li>Branchennetzwerke und öffentliche Verzeichnisse</li></ul></div>
+                    </div>
+                    <div style={{ marginTop: "16px", border: "1px solid #e2e8f0", borderRadius: "14px", padding: "18px" }}><h3 style={{ marginTop: 0 }}>Recherche- und Gesprächsnotizen</h3><p style={{ whiteSpace: "pre-wrap", marginBottom: 0 }}>{selectedAcquisition.notes || "Noch keine Notizen vorhanden. Dokumentiere hier Quellen, Gesprächsergebnisse, Rückrufzeiten und offene Fragen."}</p></div>
+                    <div style={{ marginTop: "16px", border: "1px solid #e2e8f0", borderRadius: "14px", padding: "18px" }}>
+                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: "12px", flexWrap: "wrap" }}><h3 style={{ margin: 0 }}>Kontakt-Historie</h3><button className="primary-button" onClick={() => { resetAcquisitionHistoryForm(); setAcquisitionHistoryFormOpen(true) }}>＋ Kontakt dokumentieren</button></div>
+                      {acquisitionHistoryFormOpen && (
+                        <div style={{ background: "#f8fafc", border: "1px solid #e2e8f0", borderRadius: "12px", padding: "16px", marginTop: "14px" }}>
+                          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(190px, 1fr))", gap: "12px" }}>
+                            <label>Datum<input type="date" value={acquisitionHistoryForm.contact_date} onChange={(e) => setAcquisitionHistoryForm((old) => ({ ...old, contact_date: e.target.value }))} /></label>
+                            <label>Kontaktart<select value={acquisitionHistoryForm.contact_type} onChange={(e) => setAcquisitionHistoryForm((old) => ({ ...old, contact_type: e.target.value }))}><option>Telefon</option><option>E-Mail</option><option>Persönlich</option><option>LinkedIn</option><option>Sonstiges</option></select></label>
+                            <label>Nachfassen am<input type="date" value={acquisitionHistoryForm.next_follow_up} onChange={(e) => setAcquisitionHistoryForm((old) => ({ ...old, next_follow_up: e.target.value }))} /></label>
+                          </div>
+                          <label>Ergebnis<input value={acquisitionHistoryForm.result} onChange={(e) => setAcquisitionHistoryForm((old) => ({ ...old, result: e.target.value }))} placeholder="z. B. Rückruf vereinbart, nicht erreicht ..." /></label>
+                          <label>Notiz<textarea value={acquisitionHistoryForm.note} onChange={(e) => setAcquisitionHistoryForm((old) => ({ ...old, note: e.target.value }))} placeholder="Was wurde besprochen? Wer war zuständig?" /></label>
+                          <div style={{ display: "flex", gap: "10px", flexWrap: "wrap" }}><button className="primary-button" disabled={acquisitionHistoryLoading} onClick={saveAcquisitionHistory}>Speichern</button><button className="secondary-button" onClick={() => setAcquisitionHistoryFormOpen(false)}>Abbrechen</button></div>
+                        </div>
+                      )}
+                      {acquisitionHistoryRows.filter((item) => item.akquise_id === selectedAcquisition.id).length === 0 ? <p style={{ color: "#64748b" }}>Noch keine Kontakte dokumentiert.</p> : (
+                        <div style={{ display: "grid", gap: "10px", marginTop: "14px" }}>{acquisitionHistoryRows.filter((item) => item.akquise_id === selectedAcquisition.id).map((item) => <div key={item.id} style={{ border: "1px solid #e2e8f0", borderRadius: "10px", padding: "12px" }}><div style={{ display: "flex", justifyContent: "space-between", gap: "12px", flexWrap: "wrap" }}><strong>{item.contact_date} · {item.contact_type}</strong><button className="secondary-button" onClick={() => deleteAcquisitionHistory(item.id)}>🗑 Löschen</button></div><div style={{ marginTop: "6px" }}><strong>Ergebnis:</strong> {item.result || "—"}</div><div style={{ marginTop: "4px", whiteSpace: "pre-wrap" }}>{item.note || "—"}</div>{item.next_follow_up && <div style={{ marginTop: "6px", color: "#1d4ed8", fontWeight: 700 }}>Nachfassen: {item.next_follow_up}</div>}</div>)}</div>
+                      )}
+                    </div>
+                    <div style={{ display: "flex", gap: "10px", flexWrap: "wrap", marginTop: "20px" }}><button className="primary-button" onClick={() => { setAcquisitionDetailId(null); editAcquisition(selectedAcquisition) }}>Datensatz bearbeiten</button><button className="secondary-button" onClick={() => deleteAcquisition(selectedAcquisition.id)}>Eintrag löschen</button></div>
+                  </div>
+                </div>
+              )}
+            </section>
+          )
+        })()}
 
         {page === "customers" && (
           <section>
@@ -12833,7 +13508,7 @@ function App() {
 
             {!sopLoading && sops.map((sop) => {
               const confirmed = hasConfirmedSop(sop)
-              return (
+  return (
                 <div className="card" key={sop.id} style={{ marginTop: "12px" }}>
                   <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: "12px", flexWrap: "wrap" }}>
                     <div>
