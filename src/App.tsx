@@ -7,6 +7,17 @@ import "./App.css"
 import { supabase } from "./supabase"
 import { jsPDF } from "jspdf"
 
+type VehicleCleaning = {
+  id: number
+  fahrzeug_id: number
+  user_id: string | null
+  reinigungsart: string
+  datum: string
+  status: string
+  bemerkung: string | null
+  erstellt_am: string
+}
+
 type Vehicle = {
   id: number
   kennzeichen: string
@@ -206,6 +217,18 @@ type AppUser = {
   berechtigungen: PermissionKey[]
 }
 
+type DriverMessage = {
+  id: number
+  absender_id: string | null
+  empfaenger_id: string | null
+  betreff: string
+  nachricht: string
+  an_alle: boolean
+  gelesen: boolean
+  gelesen_am: string | null
+  erstellt_am: string
+}
+
 type SopRecord = {
   id: number
   titel: string
@@ -216,6 +239,7 @@ type SopRecord = {
   erstellt_am: string | null
   geaendert_am: string | null
   erstellt_von: string | null
+  bestaetigung_frist: string | null
 }
 
 type SopConfirmation = {
@@ -607,6 +631,7 @@ function App() {
   const [page, setPage] = useState<
     | "dashboard"
     | "vehicle"
+    | "cleaning"
     | "tour"
     | "defect"
     | "tour-create"
@@ -622,7 +647,58 @@ function App() {
     | "reports"
     | "documents"
     | "warnings"
+    | "messages"
   >("dashboard")
+
+  const [cleaningRows, setCleaningRows] = useState<VehicleCleaning[]>([])
+  const [cleaningVehicleId, setCleaningVehicleId] = useState("")
+  const [cleaningType, setCleaningType] = useState("Innenreinigung")
+  const [cleaningDate, setCleaningDate] = useState(new Date().toISOString().slice(0, 10))
+  const [cleaningStatus, setCleaningStatus] = useState("Erledigt")
+  const [cleaningNote, setCleaningNote] = useState("")
+  const [cleaningLoading, setCleaningLoading] = useState(false)
+  const [cleaningMessage, setCleaningMessage] = useState("")
+
+  async function loadVehicleCleaning() {
+    setCleaningLoading(true)
+    const { data, error } = await supabase
+      .from("fahrzeug_reinigungen")
+      .select("id, fahrzeug_id, user_id, reinigungsart, datum, status, bemerkung, erstellt_am")
+      .order("datum", { ascending: false })
+      .limit(200)
+    if (error) {
+      setCleaningMessage(`Reinigungen konnten nicht geladen werden: ${error.message}`)
+      setCleaningRows([])
+    } else {
+      setCleaningRows((data || []) as VehicleCleaning[])
+      setCleaningMessage("")
+    }
+    setCleaningLoading(false)
+  }
+
+  async function saveVehicleCleaning() {
+    if (!cleaningVehicleId || !cleaningDate) {
+      setCleaningMessage("Bitte Fahrzeug und Datum auswählen.")
+      return
+    }
+    setCleaningLoading(true)
+    const { error } = await supabase.from("fahrzeug_reinigungen").insert({
+      fahrzeug_id: Number(cleaningVehicleId),
+      user_id: session?.user?.id || null,
+      reinigungsart: cleaningType,
+      datum: cleaningDate,
+      status: cleaningStatus,
+      bemerkung: cleaningNote.trim() || null,
+    })
+    if (error) {
+      setCleaningMessage(`Speichern fehlgeschlagen: ${error.message}`)
+    } else {
+      setCleaningMessage("Fahrzeugreinigung wurde gespeichert.")
+      setCleaningNote("")
+      await loadVehicleCleaning()
+    }
+    setCleaningLoading(false)
+  }
 
   // =====================================================
   // BENUTZER & ROLLEN
@@ -647,6 +723,17 @@ function App() {
   const [permissionDrafts, setPermissionDrafts] = useState<Record<string, PermissionKey[]>>({})
   const [permissionSavingId, setPermissionSavingId] = useState<string | null>(null)
 
+  const [driverMessages, setDriverMessages] = useState<DriverMessage[]>([])
+  const [messageRecipients, setMessageRecipients] = useState<AppUser[]>([])
+  const [messageRecipientId, setMessageRecipientId] = useState("")
+  const [messageAudience, setMessageAudience] = useState<"single" | "all">("single")
+  const [messageSubject, setMessageSubject] = useState("")
+  const [messageBody, setMessageBody] = useState("")
+  const [messageLoading, setMessageLoading] = useState(false)
+  const [messageSaving, setMessageSaving] = useState(false)
+  const [messageError, setMessageError] = useState("")
+  const [messageSuccess, setMessageSuccess] = useState("")
+
   const [sops, setSops] = useState<SopRecord[]>([])
   const [sopConfirmations, setSopConfirmations] = useState<SopConfirmation[]>([])
   const [sopLoading, setSopLoading] = useState(false)
@@ -654,6 +741,7 @@ function App() {
   const [sopSaving, setSopSaving] = useState(false)
   const [sopConfirmingId, setSopConfirmingId] = useState<number | null>(null)
   const [sopReminderOpen, setSopReminderOpen] = useState(false)
+  const [pendingSops, setPendingSops] = useState<SopRecord[]>([])
   const [adminSopConfirmations, setAdminSopConfirmations] = useState<AdminSopConfirmation[]>([])
   const [adminSopLoading, setAdminSopLoading] = useState(false)
   const [adminSopError, setAdminSopError] = useState("")
@@ -664,6 +752,7 @@ function App() {
   const [sopDescription, setSopDescription] = useState("")
   const [sopContent, setSopContent] = useState("")
   const [sopVersion, setSopVersion] = useState("1.0")
+  const [sopDeadline, setSopDeadline] = useState("")
 
   const normalizedRole = String(currentUser?.rolle || "").trim().toLowerCase()
   const isAdmin = normalizedRole === "admin" || normalizedRole === "administrator"
@@ -991,6 +1080,178 @@ function App() {
     await loadAssignmentUsers()
   }
 
+  async function loadMessageRecipients() {
+    if (!isAdmin && !isDisponent) return
+
+    const { data, error } = await supabase
+      .from("benutzer")
+      .select("id, email, name, rolle, aktiv, freigabestatus")
+      .eq("rolle", "Fahrer")
+      .eq("aktiv", true)
+      .order("name", { ascending: true })
+
+    if (error) {
+      setMessageError(`Fahrer konnten nicht geladen werden: ${error.message}`)
+      return
+    }
+
+    setMessageRecipients(
+      (data || []).map((row) => ({
+        id: String(row.id),
+        email: String(row.email || ""),
+        name: String(row.name || ""),
+        rolle: "Fahrer",
+        aktiv: row.aktiv !== false,
+        freigabestatus:
+          row.freigabestatus === "Freigegeben"
+            ? "Freigegeben"
+            : row.freigabestatus === "Gesperrt"
+              ? "Gesperrt"
+              : "Ausstehend",
+        berechtigungen: [],
+      }))
+    )
+  }
+
+  async function loadDriverMessages() {
+    if (!currentUser) return
+
+    setMessageLoading(true)
+    setMessageError("")
+
+    const { data, error } = await supabase
+      .from("fahrer_nachrichten")
+      .select("id, absender_id, empfaenger_id, betreff, nachricht, an_alle, gelesen, gelesen_am, erstellt_am")
+      .order("erstellt_am", { ascending: false })
+      .limit(100)
+
+    if (error) {
+      setMessageError(`Nachrichten konnten nicht geladen werden: ${error.message}`)
+      setDriverMessages([])
+    } else {
+      setDriverMessages((data || []) as DriverMessage[])
+    }
+
+    setMessageLoading(false)
+  }
+
+  async function sendDriverMessage() {
+    if (!session?.user?.id) return
+
+    if (
+      (messageAudience === "single" && !messageRecipientId) ||
+      !messageSubject.trim() ||
+      !messageBody.trim()
+    ) {
+      setMessageError(
+        messageAudience === "all"
+          ? "Bitte Betreff und Nachricht ausfüllen."
+          : "Bitte Fahrer, Betreff und Nachricht ausfüllen."
+      )
+      setMessageSuccess("")
+      return
+    }
+
+    setMessageSaving(true)
+    setMessageError("")
+    setMessageSuccess("")
+
+    const recipients =
+      messageAudience === "all"
+        ? messageRecipients
+        : messageRecipients.filter((recipient) => recipient.id === messageRecipientId)
+
+    if (recipients.length === 0) {
+      setMessageError("Es wurde kein gültiger Empfänger gefunden.")
+      setMessageSaving(false)
+      return
+    }
+
+    const rows = recipients.map((recipient) => ({
+      absender_id: session.user.id,
+      empfaenger_id: recipient.id,
+      betreff: messageSubject.trim(),
+      nachricht: messageBody.trim(),
+      an_alle: messageAudience === "all",
+      gelesen: false,
+      gelesen_am: null,
+    }))
+
+    const { error } = await supabase
+      .from("fahrer_nachrichten")
+      .insert(rows)
+
+    if (error) {
+      setMessageError(`Nachricht konnte nicht gesendet werden: ${error.message}`)
+    } else {
+      setMessageSuccess(
+        messageAudience === "all"
+          ? `Nachricht wurde an ${recipients.length} Fahrer gesendet.`
+          : "Nachricht wurde erfolgreich gesendet."
+      )
+      setMessageRecipientId("")
+      setMessageAudience("single")
+      setMessageSubject("")
+      setMessageBody("")
+      await loadDriverMessages()
+    }
+
+    setMessageSaving(false)
+  }
+
+  async function markDriverMessageAsRead(messageId: number) {
+    if (!currentUser) return
+
+    const { error } = await supabase
+      .from("fahrer_nachrichten")
+      .update({
+        gelesen: true,
+        gelesen_am: new Date().toISOString(),
+      })
+      .eq("id", messageId)
+      .eq("empfaenger_id", currentUser.id)
+
+    if (error) {
+      setMessageError(`Nachricht konnte nicht als gelesen markiert werden: ${error.message}`)
+      return
+    }
+
+    setDriverMessages((old) =>
+      old.map((message) =>
+        message.id === messageId
+          ? { ...message, gelesen: true, gelesen_am: new Date().toISOString() }
+          : message
+      )
+    )
+  }
+
+  async function markAllDriverMessagesAsRead() {
+    if (!currentUser) return
+
+    const unreadMessages = driverMessages.filter((message) => !message.gelesen)
+    if (unreadMessages.length === 0) return
+
+    const now = new Date().toISOString()
+    const { error } = await supabase
+      .from("fahrer_nachrichten")
+      .update({ gelesen: true, gelesen_am: now })
+      .eq("empfaenger_id", currentUser.id)
+      .eq("gelesen", false)
+
+    if (error) {
+      setMessageError(`Nachrichten konnten nicht als gelesen markiert werden: ${error.message}`)
+      return
+    }
+
+    setDriverMessages((old) =>
+      old.map((message) =>
+        !message.gelesen
+          ? { ...message, gelesen: true, gelesen_am: now }
+          : message
+      )
+    )
+  }
+
   async function changeUserRole(userId: string, rolle: UserRole) {
     if (!isAdmin) return
 
@@ -1142,6 +1403,15 @@ function App() {
 
     return () => window.clearInterval(interval)
   }, [])
+
+  useEffect(() => {
+    if (page !== "messages" || !currentUser) return
+
+    loadDriverMessages()
+    if (isAdmin || isDisponent) {
+      loadMessageRecipients()
+    }
+  }, [page, currentUser?.id, isAdmin, isDisponent])
 
   // =====================================================
   // FAHRZEUGE
@@ -4704,6 +4974,35 @@ function App() {
     }
     if (delivery.status !== "Offen") return
 
+    // Fahrer dürfen eine Fahrt nur starten, wenn für das zugeordnete
+    // Fahrzeug ein bestandener Fahrzeugcheck vorhanden ist.
+    if (currentUser?.rolle === "Fahrer") {
+      if (!tour?.fahrzeug_id) {
+        alert("Für diese Tour ist kein Fahrzeug zugeordnet. Die Fahrt kann nicht gestartet werden.")
+        return
+      }
+
+      const { data: latestCheck, error: checkError } = await supabase
+        .from("fahrzeugchecks")
+        .select("id, datum, status")
+        .eq("fahrzeug_id", tour.fahrzeug_id)
+        .eq("status", "Bestanden")
+        .order("datum", { ascending: false })
+        .limit(1)
+        .maybeSingle()
+
+      if (checkError) {
+        console.error("Fahrzeugcheck konnte nicht geprüft werden:", checkError)
+        alert("Der Fahrzeugcheck konnte nicht geprüft werden. Bitte erneut versuchen.")
+        return
+      }
+
+      if (!latestCheck) {
+        alert("Vor Fahrtantritt muss für dieses Fahrzeug ein bestandener Fahrzeugcheck gespeichert werden.")
+        return
+      }
+    }
+
     const success =
       await updateDelivery(id, {
         status: "Unterwegs",
@@ -6612,7 +6911,7 @@ function App() {
 
     const { data, error } = await supabase
       .from("sops")
-      .select("id, titel, beschreibung, inhalt, version, aktiv, erstellt_am, geaendert_am, erstellt_von")
+      .select("id, titel, beschreibung, inhalt, version, aktiv, erstellt_am, geaendert_am, erstellt_von, bestaetigung_frist")
       .eq("aktiv", true)
       .order("geaendert_am", { ascending: false })
 
@@ -6646,6 +6945,7 @@ function App() {
             (item) => item.sop_id === sop.id && item.version === sop.version && item.fahrer_id === currentUser.id
           )
         )
+        setPendingSops(pending)
         setSopReminderOpen(pending.length > 0)
       }
     }
@@ -6662,7 +6962,7 @@ function App() {
     const [{ data: sopRows, error: sopError }, { data: confirmationRows, error: confirmationError }] = await Promise.all([
       supabase
         .from("sops")
-        .select("id, titel, beschreibung, inhalt, version, aktiv, erstellt_am, geaendert_am, erstellt_von")
+        .select("id, titel, beschreibung, inhalt, version, aktiv, erstellt_am, geaendert_am, erstellt_von, bestaetigung_frist")
         .order("geaendert_am", { ascending: false }),
       supabase
         .from("sop_bestaetigungen")
@@ -6832,6 +7132,7 @@ function App() {
     setSopDescription("")
     setSopContent("")
     setSopVersion("1.0")
+    setSopDeadline("")
   }
 
   function openSopCreate() {
@@ -6840,6 +7141,7 @@ function App() {
     setSopDescription("")
     setSopContent("")
     setSopVersion("1.0")
+    setSopDeadline("")
     setSopFormOpen(true)
   }
 
@@ -6849,6 +7151,7 @@ function App() {
     setSopDescription(sop.beschreibung || "")
     setSopContent(sop.inhalt)
     setSopVersion(sop.version)
+    setSopDeadline(sop.bestaetigung_frist || "")
     setSopFormOpen(true)
   }
 
@@ -6866,6 +7169,7 @@ function App() {
       beschreibung: sopDescription.trim() || null,
       inhalt: sopContent.trim(),
       version: sopVersion.trim(),
+      bestaetigung_frist: sopDeadline || null,
       aktiv: true,
     }
 
@@ -6882,6 +7186,35 @@ function App() {
     resetSopForm()
     await loadSops()
     setSopSaving(false)
+  }
+
+  async function deleteSop(sop: SopRecord) {
+    if (!isAdmin) return
+    if (!window.confirm(`Die SOP „${sop.titel}“ wirklich dauerhaft löschen? Alle zugehörigen Bestätigungen werden ebenfalls gelöscht. Diese Aktion kann nicht rückgängig gemacht werden.`)) return
+
+    const { error: confirmationError } = await supabase
+      .from("sop_bestaetigungen")
+      .delete()
+      .eq("sop_id", sop.id)
+
+    if (confirmationError) {
+      alert("Die SOP-Bestätigungen konnten nicht gelöscht werden:\n\n" + confirmationError.message)
+      return
+    }
+
+    const { error } = await supabase
+      .from("sops")
+      .delete()
+      .eq("id", sop.id)
+
+    if (error) {
+      alert("SOP konnte nicht gelöscht werden:\n\n" + error.message)
+      return
+    }
+
+    resetSopForm()
+    await loadSops()
+    if (isAdmin) await loadAdminSopOverview()
   }
 
   async function deactivateSop(sopId: number) {
@@ -6964,6 +7297,7 @@ function App() {
     nextPage:
       | "dashboard"
       | "vehicle"
+      | "cleaning"
       | "tour"
       | "defect"
       | "tour-create"
@@ -6979,11 +7313,13 @@ function App() {
       | "reports"
       | "documents"
       | "warnings"
+      | "messages"
   ) {
     setMenuOpen(false)
     const requiredPermission: Partial<Record<typeof nextPage, PermissionKey>> = {
       dashboard: "dashboard",
       vehicle: "fahrzeugcheck",
+      cleaning: "fahrzeuge",
       tour: "touren",
       "tour-create": "touren_anlegen",
       "tour-management": "touren_verwalten",
@@ -7024,6 +7360,13 @@ function App() {
 
     if (nextPage === "sops") {
       loadSops()
+    }
+
+    if (nextPage === "messages") {
+      loadDriverMessages()
+      if (isAdmin || isDisponent) {
+        loadMessageRecipients()
+      }
     }
 
     if (nextPage === "defect") {
@@ -7091,6 +7434,12 @@ function App() {
   // =====================================================
   // ANMELDUNG / PASSWORT-RESET
   // =====================================================
+
+  useEffect(() => {
+    if (page === "cleaning" && hasPermission("fahrzeuge")) {
+      loadVehicleCleaning()
+    }
+  }, [page])
 
   if (authLoading) {
     return (
@@ -7369,9 +7718,9 @@ function App() {
         }}
       >
         <div style={{ fontSize: "46px", textAlign: "center" }}>📚</div>
-        <h2 style={{ textAlign: "center" }}>SOPs müssen noch bestätigt werden</h2>
+        <h2 style={{ textAlign: "center" }}>{pendingSops.length} offene {pendingSops.length === 1 ? "SOP-Schulung" : "SOP-Schulungen"}</h2>
         <p style={{ textAlign: "center" }}>
-          Bitte lies die folgenden Arbeitsanweisungen und bestätige sie, bevor du sie als erledigt markieren kannst.
+          Bitte lies die folgenden Arbeitsanweisungen und bestätige sie. Die offenen Schulungen bleiben hier sichtbar, bis du sie bestätigt hast.
         </p>
 
         <div style={{ display: "grid", gap: "10px", marginTop: "16px" }}>
@@ -7800,6 +8149,15 @@ function App() {
           <span style={{ marginRight: "8px" }}>✅</span>Fahrzeugcheck
         </button>
 
+        {hasPermission("fahrzeuge") && (
+          <button
+            className={page === "cleaning" ? "nav active" : "nav"}
+            onClick={() => navigateTo("cleaning")}
+          >
+            <span style={{ marginRight: "8px" }}>🧽</span>Fahrzeugreinigung
+          </button>
+        )}
+
         <button
           className={
             page === "tour"
@@ -7967,6 +8325,28 @@ function App() {
         <div className={expandedMenuSections.einstellungen ? "navigation-submenu open" : "navigation-submenu"}>
 
         <button
+          className={page === "messages" ? "nav active" : "nav"}
+          onClick={() => navigateTo("messages")}
+        >
+          <span style={{ marginRight: "8px" }}>✉️</span>Nachrichten
+          {driverMessages.filter(
+            (message) =>
+              !message.gelesen &&
+              message.empfaenger_id === currentUser?.id
+          ).length > 0 && (
+            <span className="defect-badges">
+              <span className="defect-badge urgent">
+                {driverMessages.filter(
+                  (message) =>
+                    !message.gelesen &&
+                    message.empfaenger_id === currentUser?.id
+                ).length}
+              </span>
+            </span>
+          )}
+        </button>
+
+        <button
           className={page === "sops" ? "nav active" : "nav"}
           onClick={() => navigateTo("sops")}
         >
@@ -8001,6 +8381,133 @@ function App() {
       </nav>
 
       <main className="content">
+
+        {page === "messages" && (
+          <section>
+            <div className="card">
+              <h2>✉️ Nachrichten</h2>
+              <p>Hier kannst du Nachrichten an Fahrer senden und deine erhaltenen Nachrichten lesen.</p>
+
+              {messageError && <p className="error-message">{messageError}</p>}
+              {messageSuccess && <p className="success-message">{messageSuccess}</p>}
+
+              {(isAdmin || isDisponent) && (
+                <div className="card" style={{ marginBottom: "20px" }}>
+                  <h3>Nachricht an Fahrer senden</h3>
+
+                  <label>
+                    Empfänger
+                    <select
+                      value={messageAudience}
+                      onChange={(event) => {
+                        const value = event.target.value as "single" | "all"
+                        setMessageAudience(value)
+                        if (value === "all") setMessageRecipientId("")
+                      }}
+                    >
+                      <option value="single">Einzelnen Fahrer</option>
+                      <option value="all">Alle aktiven Fahrer</option>
+                    </select>
+                  </label>
+
+                  {messageAudience === "single" && (
+                    <label>
+                      Fahrer
+                      <select
+                        value={messageRecipientId}
+                        onChange={(event) => setMessageRecipientId(event.target.value)}
+                      >
+                        <option value="">Fahrer auswählen</option>
+                        {messageRecipients.map((recipient) => (
+                          <option key={recipient.id} value={recipient.id}>
+                            {recipient.name} – {recipient.email}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                  )}
+
+                  <label>
+                    Betreff
+                    <input
+                      type="text"
+                      value={messageSubject}
+                      onChange={(event) => setMessageSubject(event.target.value)}
+                      placeholder="Betreff der Nachricht"
+                    />
+                  </label>
+
+                  <label>
+                    Nachricht
+                    <textarea
+                      value={messageBody}
+                      onChange={(event) => setMessageBody(event.target.value)}
+                      placeholder="Nachricht eingeben"
+                      rows={5}
+                    />
+                  </label>
+
+                  <button type="button" onClick={sendDriverMessage} disabled={messageSaving}>
+                    {messageSaving ? "Wird gesendet..." : "Nachricht senden"}
+                  </button>
+                </div>
+              )}
+
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: "12px", flexWrap: "wrap" }}>
+                <h3>{isAdmin || isDisponent ? "Nachrichtenübersicht" : "Meine Nachrichten"}</h3>
+                <button type="button" onClick={loadDriverMessages} disabled={messageLoading}>
+                  {messageLoading ? "Wird geladen..." : "Nachrichten aktualisieren"}
+                </button>
+              </div>
+              {!isAdmin && !isDisponent && driverMessages.some((message) => !message.gelesen) && (
+                <button type="button" onClick={markAllDriverMessagesAsRead}>
+                  Alle als gelesen markieren
+                </button>
+              )}
+
+              {messageLoading && <p>Nachrichten werden geladen...</p>}
+
+              {!messageLoading && driverMessages.length === 0 && (
+                <p>Keine Nachrichten vorhanden.</p>
+              )}
+
+              {!messageLoading && driverMessages.length > 0 && (
+                <div>
+                  {driverMessages.map((message) => (
+                    <article
+                      key={message.id}
+                      className="card"
+                      style={{
+                        marginBottom: "12px",
+                        borderLeft: message.gelesen ? "4px solid #9ca3af" : "4px solid #2563eb",
+                      }}
+                    >
+                      <div style={{ display: "flex", justifyContent: "space-between", gap: "12px", flexWrap: "wrap" }}>
+                        <strong>{message.betreff}</strong>
+                        <span>{new Date(message.erstellt_am).toLocaleString("de-DE")}</span>
+                      </div>
+                      <p style={{ whiteSpace: "pre-wrap" }}>{message.nachricht}</p>
+                      <small>
+                        Status: {message.gelesen ? "Gelesen" : "Ungelesen"}
+                      </small>
+
+                      {currentUser?.rolle === "Fahrer" && !message.gelesen && (
+                        <div style={{ marginTop: "10px" }}>
+                          <button
+                            type="button"
+                            onClick={() => markDriverMessageAsRead(message.id)}
+                          >
+                            Als gelesen markieren
+                          </button>
+                        </div>
+                      )}
+                    </article>
+                  ))}
+                </div>
+              )}
+            </div>
+          </section>
+        )}
 
         {/* =================================================
             MEINE TOUREN
@@ -11534,6 +12041,59 @@ function App() {
           </section>
         )}
 
+        {page === "cleaning" && hasPermission("fahrzeuge") && (
+          <section>
+            <div className="card">
+              <h2>🧽 Fahrzeugreinigung</h2>
+              <p>Innen-, Außen- oder Komplettreinigung dokumentieren.</p>
+              <div className="form-grid">
+                <label>Fahrzeug
+                  <select value={cleaningVehicleId} onChange={(e) => setCleaningVehicleId(e.target.value)}>
+                    <option value="">Fahrzeug auswählen</option>
+                    {vehicles.map((vehicle) => (
+                      <option key={vehicle.id} value={vehicle.id}>{vehicle.kennzeichen}</option>
+                    ))}
+                  </select>
+                </label>
+                <label>Reinigungsart
+                  <select value={cleaningType} onChange={(e) => setCleaningType(e.target.value)}>
+                    <option>Innenreinigung</option>
+                    <option>Außenreinigung</option>
+                    <option>Komplettreinigung</option>
+                  </select>
+                </label>
+                <label>Datum
+                  <input type="date" value={cleaningDate} onChange={(e) => setCleaningDate(e.target.value)} />
+                </label>
+                <label>Status
+                  <select value={cleaningStatus} onChange={(e) => setCleaningStatus(e.target.value)}>
+                    <option>Erledigt</option>
+                    <option>Offen</option>
+                    <option>Mangelhaft</option>
+                  </select>
+                </label>
+              </div>
+              <label>Bemerkung
+                <textarea value={cleaningNote} onChange={(e) => setCleaningNote(e.target.value)} rows={3} />
+              </label>
+              <button type="button" className="primary-button" onClick={saveVehicleCleaning} disabled={cleaningLoading}>
+                {cleaningLoading ? "Wird gespeichert..." : "Reinigung speichern"}
+              </button>
+              {cleaningMessage && <p className="success">{cleaningMessage}</p>}
+            </div>
+            <div className="card">
+              <h3>Reinigungshistorie</h3>
+              {cleaningRows.length === 0 ? <p>Keine Reinigungen gespeichert.</p> : cleaningRows.map((row) => (
+                <div key={row.id} style={{ borderTop: "1px solid #e5e7eb", padding: "10px 0" }}>
+                  <strong>{vehicles.find((vehicle) => vehicle.id === row.fahrzeug_id)?.kennzeichen || `Fahrzeug ${row.fahrzeug_id}`}</strong>
+                  {" · "}{row.reinigungsart} · {row.datum} · {row.status}
+                  {row.bemerkung ? <div>{row.bemerkung}</div> : null}
+                </div>
+              ))}
+            </div>
+          </section>
+        )}
+
         {page === "fleet" && hasPermission("fahrzeuge") && (
           <section>
             <div className="card">
@@ -12247,6 +12807,11 @@ function App() {
                     <input id="sop-version" value={sopVersion} onChange={(e) => setSopVersion(e.target.value)} placeholder="1.0" />
                   </div>
                   <div>
+                    <label htmlFor="sop-deadline">Bestätigungsfrist</label>
+                    <input id="sop-deadline" type="date" value={sopDeadline} onChange={(e) => setSopDeadline(e.target.value)} />
+                    <small style={{ display: "block", marginTop: "4px", color: "#64748b" }}>Bis zu diesem Datum muss der Fahrer die SOP bestätigen.</small>
+                  </div>
+                  <div>
                     <label htmlFor="sop-content">Inhalt</label>
                     <textarea id="sop-content" value={sopContent} onChange={(e) => setSopContent(e.target.value)} rows={12} placeholder="Arbeitsanweisung..." />
                   </div>
@@ -12300,6 +12865,9 @@ function App() {
                       <>
                         <button type="button" className="secondary-button" onClick={() => openSopEdit(sop)}>Bearbeiten</button>
                         <button type="button" className="secondary-button" onClick={() => deactivateSop(sop.id)}>Deaktivieren</button>
+                        {isAdmin && (
+                          <button type="button" className="secondary-button" onClick={() => deleteSop(sop)}>Dauerhaft löschen</button>
+                        )}
                       </>
                     )}
                   </div>
