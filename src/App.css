@@ -3669,3 +3669,41 @@ body {
   }
 }
 
+
+
+/* Zusatzleistungen und Tourunterlagen */
+.charge-editor {
+  display: grid;
+  grid-template-columns: minmax(180px, 1fr) minmax(140px, 1fr) auto;
+  gap: 8px;
+  align-items: center;
+  margin-top: 10px;
+}
+.charge-row {
+  display: grid;
+  grid-template-columns: 1fr auto auto;
+  gap: 10px;
+  align-items: center;
+  padding: 9px 12px;
+  margin-top: 6px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface-soft);
+}
+.icon-button {
+  border: 0;
+  background: transparent;
+  color: #b42318;
+  cursor: pointer;
+  font-size: 20px;
+  font-weight: 700;
+}
+.document-selection {
+  margin: 10px 0 0;
+  padding-left: 20px;
+}
+@media (max-width: 700px) {
+  .charge-editor {
+    grid-template-columns: 1fr;
+  }
+}

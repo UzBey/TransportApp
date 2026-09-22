@@ -68,6 +68,8 @@ type Tour = {
   status: string
   km_start?: number | null
   km_ende?: number | null
+  zu_fahrende_km?: number | null
+  rechnungsstatus?: "Ausstehend" | "Gestellt" | "Bezahlt" | null
   sortOrder?: number | null
 }
 
@@ -88,6 +90,12 @@ type Delivery = {
   sortOrder?: number | null
   customer: string
   address: string
+  pickupCustomer?: string | null
+  pickupAddress?: string | null
+  pickupTime?: string | null
+  pickupNote?: string | null
+  pickupArrivalTime?: string | null
+  pickupDepartureTime?: string | null
   plannedTime: string
   status:
     | "Offen"
@@ -104,15 +112,31 @@ type Delivery = {
   driverNote?: string
   kundeId?: number | null
   customerAmount?: number | null
+  shipmentType?: string | null
+  packageCount?: number | null
+  additionalCharges?: AdditionalCharge[]
+}
+
+type AdditionalCharge = {
+  type: string
+  label: string
+  amount: string
 }
 
 type NewDelivery = {
   customer: string
   address: string
+  pickupCustomer: string
+  pickupAddress: string
+  pickupTime: string
+  pickupNote: string
   plannedTime: string
   kundeId?: number | null
   customerAmount: string
   note: string
+  shipmentType: string
+  packageCount: string
+  additionalCharges: AdditionalCharge[]
 }
 
 type Customer = {
@@ -151,7 +175,7 @@ type TourDocumentRecord = {
   id: number
   tour_id: number
   lieferung_id: number
-  dokumenttyp: "Frachtbrief" | "Tankbeleg"
+  dokumenttyp: "Frachtbrief" | "Tankbeleg" | "Tourunterlage" | "Schadensfoto"
   dateiname: string
   speicherpfad: string
   erstellt_am?: string | null
@@ -339,6 +363,18 @@ type ShiftVehicleSegment = {
   gefahrene_km: number | null
 }
 
+type FinanceEntry = {
+  id: number
+  datum: string
+  typ: "Einnahme" | "Ausgabe"
+  kategorie: string
+  beschreibung: string
+  betrag: number
+  bezahlt: boolean
+  tour_id: number | null
+  erstellt_am?: string | null
+}
+
 type DocumentRecord = {
   id: number
   fahrzeug_id: number | null
@@ -390,6 +426,15 @@ function getToday(): string {
   const year = now.getFullYear()
   const month = String(now.getMonth() + 1).padStart(2, "0")
   const day = String(now.getDate()).padStart(2, "0")
+  return `${year}-${month}-${day}`
+}
+
+function addDaysToDateString(dateString: string, days: number): string {
+  const date = new Date(`${dateString}T12:00:00`)
+  date.setDate(date.getDate() + days)
+  const year = date.getFullYear()
+  const month = String(date.getMonth() + 1).padStart(2, "0")
+  const day = String(date.getDate()).padStart(2, "0")
   return `${year}-${month}-${day}`
 }
 
@@ -678,6 +723,7 @@ function App() {
     | "driver-management"
     | "work-time"
     | "reports"
+    | "finance"
     | "documents"
     | "warnings"
     | "messages"
@@ -853,6 +899,7 @@ function App() {
   // Fahrer dürfen ihre eigene Auswertung sehen. Änderungen an Schichten
   // sind ausschließlich für Admin und Disponent vorgesehen.
   const canViewReports = currentUser?.rolle === "Fahrer" || hasPermission("auswertungen")
+  const canViewFinance = isAdmin || isDisponent || hasPermission("auswertungen")
   const canEditShiftCorrections = isAdmin || isDisponent || hasPermission("auswertungen")
 
   useEffect(() => {
@@ -1870,7 +1917,7 @@ function App() {
   function updateChecklistDefect(
     index: number,
     field: "beschreibung" | "prioritaet",
-    value: string
+    value: string | AdditionalCharge[]
   ) {
     setChecklistDefects((old) => ({
       ...old,
@@ -2112,8 +2159,11 @@ function App() {
 
   const [tourKmStart, setTourKmStart] = useState("")
   const [tourKmEnd, setTourKmEnd] = useState("")
-  const [invoiceCompanyName, setInvoiceCompanyName] = useState("")
-  const [invoiceCompanyAddress, setInvoiceCompanyAddress] = useState("")
+  const DEFAULT_INVOICE_COMPANY_NAME = "UzGmbH"
+  const DEFAULT_INVOICE_COMPANY_ADDRESS = "Kelsterbacher Str. 2-4\n65479 Raunheim"
+
+  const [invoiceCompanyName, setInvoiceCompanyName] = useState(DEFAULT_INVOICE_COMPANY_NAME)
+  const [invoiceCompanyAddress, setInvoiceCompanyAddress] = useState(DEFAULT_INVOICE_COMPANY_ADDRESS)
   const [invoiceCompanyTaxId, setInvoiceCompanyTaxId] = useState("")
   const [invoicePaymentDays, setInvoicePaymentDays] = useState("14")
   const [invoiceBankDetails, setInvoiceBankDetails] = useState("")
@@ -2133,8 +2183,12 @@ function App() {
           bankDetails?: string
         }
 
-        setInvoiceCompanyName(saved.companyName || "")
-        setInvoiceCompanyAddress(saved.companyAddress || "")
+        setInvoiceCompanyName(saved.companyName || DEFAULT_INVOICE_COMPANY_NAME)
+        const savedAddress = saved.companyAddress?.trim() || ""
+        const normalizedAddress = savedAddress.includes("Kelsterbacher Str. 2-4") && savedAddress.includes("65479 Raunheim")
+          ? DEFAULT_INVOICE_COMPANY_ADDRESS
+          : savedAddress || DEFAULT_INVOICE_COMPANY_ADDRESS
+        setInvoiceCompanyAddress(normalizedAddress)
         setInvoiceCompanyTaxId(saved.taxId || "")
         setInvoicePaymentDays(saved.paymentDays || "14")
         setInvoiceBankDetails(saved.bankDetails || "")
@@ -2191,6 +2245,19 @@ function App() {
   const [reportTourRows, setReportTourRows] = useState<any[]>([])
   const [reportShiftRows, setReportShiftRows] = useState<any[]>([])
   const [reportWorkRows, setReportWorkRows] = useState<any[]>([])
+  const [financeMonth, setFinanceMonth] = useState(() => getToday().slice(0, 7))
+  const [financeRows, setFinanceRows] = useState<FinanceEntry[]>([])
+  const [financeLoading, setFinanceLoading] = useState(false)
+  const [financeMessage, setFinanceMessage] = useState("")
+  const [financeForm, setFinanceForm] = useState({
+    datum: getToday(), typ: "Einnahme" as "Einnahme" | "Ausgabe",
+    kategorie: "Tourumsatz", beschreibung: "", betrag: "", bezahlt: true, tour_id: "",
+  })
+  const [financeCalc, setFinanceCalc] = useState({
+    umsatz: "", kilometer: "", verbrauch: "10", dieselpreis: "1.70",
+    fahrerstunden: "", fahrerlohn: "18", sonstigeKosten: "",
+  })
+  const [financeShowAll, setFinanceShowAll] = useState(false)
   const [editingShiftId, setEditingShiftId] = useState<number | null>(null)
   const [editingShiftStart, setEditingShiftStart] = useState("")
   const [editingShiftEnd, setEditingShiftEnd] = useState("")
@@ -2697,6 +2764,10 @@ function App() {
     useState<number | null>(null)
   const [showCompletedTours, setShowCompletedTours] =
     useState(false)
+  const [tourSearchTerm, setTourSearchTerm] = useState("")
+  const [tourStatusFilter, setTourStatusFilter] = useState("Alle")
+  const [managementTourOpen, setManagementTourOpen] = useState(false)
+  const [managementDeliveriesOpen, setManagementDeliveriesOpen] = useState(false)
 
   const [deliveries, setDeliveries] =
     useState<Delivery[]>([])
@@ -3087,9 +3158,52 @@ function App() {
   // ALLE TOUREN LADEN
   // =====================================================
 
-  const visibleTours = showCompletedTours
+  const visibleTours = (showCompletedTours
     ? tours
     : tours.filter((item) => !isCompletedTour(item))
+  ).filter((item) => {
+    const search = tourSearchTerm.trim().toLowerCase()
+    const matchesSearch =
+      !search ||
+      [
+        item.tournummer,
+        item.status,
+        item.fahrer,
+        item.rechnungsstatus || "",
+        String(item.id),
+      ].some((value) => String(value || "").toLowerCase().includes(search))
+    const matchesStatus =
+      tourStatusFilter === "Alle" ||
+      (tourStatusFilter === "Rechnung ausstehend" && (item.rechnungsstatus || "Ausstehend") === "Ausstehend") ||
+      (tourStatusFilter === "Rechnung gestellt" && item.rechnungsstatus === "Gestellt") ||
+      (tourStatusFilter === "Rechnung bezahlt" && item.rechnungsstatus === "Bezahlt") ||
+      (tourStatusFilter === "Tour offen" && !isCompletedTour(item)) ||
+      (tourStatusFilter === "Tour abgeschlossen" && isCompletedTour(item))
+    return matchesSearch && matchesStatus
+  })
+
+  // In der Tourenverwaltung werden abgeschlossene Touren immer mitgeführt.
+  // Die Auswahl von Tour- oder Rechnungsstatus steuert ausschließlich den Filter.
+  const managementVisibleTours = tours.filter((item) => {
+    const search = tourSearchTerm.trim().toLowerCase()
+    const matchesSearch =
+      !search ||
+      [
+        item.tournummer,
+        item.status,
+        item.fahrer,
+        item.rechnungsstatus || "",
+        String(item.id),
+      ].some((value) => String(value || "").toLowerCase().includes(search))
+    const matchesStatus =
+      tourStatusFilter === "Alle" ||
+      (tourStatusFilter === "Rechnung ausstehend" && (item.rechnungsstatus || "Ausstehend") === "Ausstehend") ||
+      (tourStatusFilter === "Rechnung gestellt" && item.rechnungsstatus === "Gestellt") ||
+      (tourStatusFilter === "Rechnung bezahlt" && item.rechnungsstatus === "Bezahlt") ||
+      (tourStatusFilter === "Tour offen" && !isCompletedTour(item)) ||
+      (tourStatusFilter === "Tour abgeschlossen" && isCompletedTour(item))
+    return matchesSearch && matchesStatus
+  })
 
   async function loadTours(
     preferredTourId?: number | null
@@ -3100,13 +3214,18 @@ function App() {
     let tourQuery = supabase
       .from("touren")
       .select(
-        "id, tournummer, datum, fahrzeug_id, fahrer_id, fahrer, status, km_start, km_ende"
+        "id, tournummer, datum, fahrzeug_id, fahrer_id, fahrer, status, rechnungsstatus, km_start, km_ende, zu_fahrende_km"
       )
 
     // Fahrer sehen auch auf UI-Ebene nur ihre eigenen Touren.
     // Die eigentliche Sicherheit wird zusätzlich durch Supabase RLS erzwungen.
     if (currentUser?.rolle === "Fahrer" && currentUser.id) {
-      tourQuery = tourQuery.eq("fahrer_id", currentUser.id)
+      const today = getToday()
+      const dayAfterTomorrow = addDaysToDateString(today, 2)
+      tourQuery = tourQuery
+        .eq("fahrer_id", currentUser.id)
+        .gte("datum", today)
+        .lte("datum", dayAfterTomorrow)
     }
 
     const { data, error } = await tourQuery
@@ -3154,6 +3273,11 @@ function App() {
           row.status != null
             ? String(row.status)
             : "Offen",
+        rechnungsstatus:
+          row.rechnungsstatus === "Gestellt" ||
+          row.rechnungsstatus === "Bezahlt"
+            ? row.rechnungsstatus
+            : "Ausstehend",
         km_start:
           row.km_start != null
             ? Number(row.km_start)
@@ -3161,6 +3285,10 @@ function App() {
         km_ende:
           row.km_ende != null
             ? Number(row.km_ende)
+            : null,
+        zu_fahrende_km:
+          row.zu_fahrende_km != null
+            ? Number(row.zu_fahrende_km)
             : null,
       }))
 
@@ -3219,6 +3347,29 @@ function App() {
 
       // Auch Touren ohne Lieferungen werden nach dem Tourdatum sortiert.
       loadedTours.sort((a, b) => a.datum.localeCompare(b.datum))
+    }
+
+    if (currentUser?.rolle === "Fahrer") {
+      const today = getToday()
+      const tomorrow = addDaysToDateString(today, 1)
+      const dayAfterTomorrow = addDaysToDateString(today, 2)
+      const driverDateRank = (date: string) => {
+        if (date === tomorrow) return 0
+        if (date === today) return 1
+        if (date === dayAfterTomorrow) return 2
+        return 3
+      }
+
+      loadedTours.sort((a, b) => {
+        const completedA = isCompletedTour(a)
+        const completedB = isCompletedTour(b)
+        if (completedA !== completedB) return completedA ? 1 : -1
+
+        const rankDifference = driverDateRank(a.datum) - driverDateRank(b.datum)
+        if (rankDifference !== 0) return rankDifference
+
+        return a.id - b.id
+      })
     }
 
     setTours(loadedTours)
@@ -3413,6 +3564,12 @@ function App() {
           kunde_id,
           kundename,
           adresse,
+          abholkunde,
+          abholadresse,
+          abholzeit,
+          abholhinweis,
+          abhol_ankunftszeit,
+          abhol_abfahrtszeit,
           geplante_zeit,
           status,
           ankunftszeit,
@@ -3423,7 +3580,10 @@ function App() {
           beschwerde,
           notiz,
           fahrernotiz,
-          kundenbetrag
+          kundenbetrag,
+          art_der_sendung,
+          packstuecke,
+          zusatzkosten
         `
       )
       .eq("tour_id", tourId)
@@ -3451,6 +3611,12 @@ function App() {
         address: String(
           row.adresse || ""
         ),
+        pickupCustomer: row.abholkunde || null,
+        pickupAddress: row.abholadresse || null,
+        pickupTime: normalizeTime(row.abholzeit) || null,
+        pickupNote: row.abholhinweis || null,
+        pickupArrivalTime: normalizeTime(row.abhol_ankunftszeit) || null,
+        pickupDepartureTime: normalizeTime(row.abhol_abfahrtszeit) || null,
         plannedTime:
           normalizeTime(
             row.geplante_zeit
@@ -3489,6 +3655,21 @@ function App() {
           currentUser?.rolle === "Fahrer" || row.kundenbetrag == null
             ? null
             : Number(row.kundenbetrag),
+        shipmentType: row.art_der_sendung || null,
+        packageCount:
+          row.packstuecke != null ? Number(row.packstuecke) : null,
+        additionalCharges: Array.isArray(row.zusatzkosten)
+          ? row.zusatzkosten
+              .filter((charge: unknown): charge is AdditionalCharge => {
+                if (!charge || typeof charge !== "object") return false
+                const candidate = charge as Record<string, unknown>
+                return (
+                  typeof candidate.type === "string" &&
+                  typeof candidate.label === "string" &&
+                  typeof candidate.amount === "string"
+                )
+              })
+          : [],
       }))
 
     // Lieferungen zuerst nach manueller Reihenfolge sortieren.
@@ -4633,6 +4814,68 @@ function App() {
     setReportLoading(false)
   }
 
+  async function loadFinanceRows() {
+    setFinanceLoading(true)
+    setFinanceMessage("")
+    const start = `${financeMonth}-01`
+    const endDate = new Date(`${financeMonth}-01T12:00:00`)
+    endDate.setMonth(endDate.getMonth() + 1)
+    const end = `${endDate.getFullYear()}-${String(endDate.getMonth() + 1).padStart(2, "0")}-01`
+    const { data, error } = await supabase.from("finanzbuchungen")
+      .select("id, datum, typ, kategorie, beschreibung, betrag, bezahlt, tour_id, erstellt_am")
+      .gte("datum", start).lt("datum", end)
+      .order("datum", { ascending: false }).order("id", { ascending: false })
+    if (error) {
+      setFinanceRows([])
+      setFinanceMessage(`Finanzdaten konnten nicht geladen werden: ${error.message}`)
+    } else setFinanceRows((data || []) as FinanceEntry[])
+    setFinanceLoading(false)
+  }
+
+  async function saveFinanceEntry() {
+    const amount = Number(financeForm.betrag.replace(",", "."))
+    if (!financeForm.datum || !financeForm.kategorie.trim() || !Number.isFinite(amount) || amount <= 0) {
+      setFinanceMessage("Bitte Datum, Kategorie und einen gültigen Betrag eingeben.")
+      return
+    }
+    setFinanceLoading(true)
+    const { error } = await supabase.from("finanzbuchungen").insert({
+      datum: financeForm.datum, typ: financeForm.typ, kategorie: financeForm.kategorie.trim(),
+      beschreibung: financeForm.beschreibung.trim() || null, betrag: Math.round(amount * 100) / 100,
+      bezahlt: financeForm.bezahlt, tour_id: financeForm.tour_id ? Number(financeForm.tour_id) : null,
+      erstellt_von: session?.user?.id || null,
+    })
+    if (error) setFinanceMessage(`Buchung konnte nicht gespeichert werden: ${error.message}`)
+    else {
+      setFinanceMessage("Buchung wurde gespeichert.")
+      setFinanceForm((form) => ({ ...form, beschreibung: "", betrag: "", tour_id: "" }))
+      await loadFinanceRows()
+    }
+    setFinanceLoading(false)
+  }
+
+  async function deleteFinanceEntry(entry: FinanceEntry) {
+    if (!window.confirm(`Buchung "${entry.beschreibung || entry.kategorie}" wirklich löschen?`)) return
+    const { error } = await supabase.from("finanzbuchungen").delete().eq("id", entry.id)
+    if (error) return setFinanceMessage(`Buchung konnte nicht gelöscht werden: ${error.message}`)
+    setFinanceRows((rows) => rows.filter((row) => row.id !== entry.id))
+    setFinanceMessage("Buchung wurde gelöscht.")
+  }
+
+  function euro(value: number): string {
+    return `${value.toLocaleString("de-DE", { minimumFractionDigits: 2, maximumFractionDigits: 2 })} €`
+  }
+
+  const financeIncome = financeRows.filter((row) => row.typ === "Einnahme").reduce((sum, row) => sum + Number(row.betrag || 0), 0)
+  const financeExpenses = financeRows.filter((row) => row.typ === "Ausgabe").reduce((sum, row) => sum + Number(row.betrag || 0), 0)
+  const financeResult = financeIncome - financeExpenses
+  const calcRevenue = Number(financeCalc.umsatz.replace(",", ".")) || 0
+  const calcFuelCost = ((Number(financeCalc.kilometer.replace(",", ".")) || 0) / 100) * (Number(financeCalc.verbrauch.replace(",", ".")) || 0) * (Number(financeCalc.dieselpreis.replace(",", ".")) || 0)
+  const calcDriverCost = (Number(financeCalc.fahrerstunden.replace(",", ".")) || 0) * (Number(financeCalc.fahrerlohn.replace(",", ".")) || 0)
+  const calcOtherCost = Number(financeCalc.sonstigeKosten.replace(",", ".")) || 0
+  const calcTotalCost = calcFuelCost + calcDriverCost + calcOtherCost
+  const calcMargin = calcRevenue - calcTotalCost
+
   function getReportDriverLabel(): string {
     if (currentUser?.rolle === "Fahrer") {
       return currentUser.name || currentUser.email || "Eigener Bericht"
@@ -4970,6 +5213,8 @@ function App() {
     setSelectedTourId(tourId)
     setTour(selected)
     setActiveDelivery(null)
+    setManagementTourOpen(false)
+    setManagementDeliveriesOpen(false)
     setDeliveryMessage("")
     setTourError("")
 
@@ -5165,6 +5410,25 @@ function App() {
     setDeliveryMessage("")
   }
 
+  async function setPickupArrivalTime(id: number, time: string) {
+    const delivery = deliveries.find((item) => item.id === id)
+    if (!delivery || delivery.status !== "Unterwegs") return
+    const success = await updateDelivery(id, { abhol_ankunftszeit: time || null })
+    if (!success) return
+    setDeliveries((old) => old.map((item) => item.id === id ? { ...item, pickupArrivalTime: time || null } : item))
+  }
+
+  async function setPickupDepartureTime(id: number, time: string) {
+    const delivery = deliveries.find((item) => item.id === id)
+    if (!delivery || !delivery.pickupArrivalTime) {
+      alert("Bitte zuerst die Ankunft bei der Abholstelle erfassen.")
+      return
+    }
+    const success = await updateDelivery(id, { abhol_abfahrtszeit: time || null })
+    if (!success) return
+    setDeliveries((old) => old.map((item) => item.id === id ? { ...item, pickupDepartureTime: time || null } : item))
+  }
+
   async function arriveAtCustomer(
     id: number
   ) {
@@ -5172,6 +5436,11 @@ function App() {
     if (!currentDelivery) return
     if (currentDelivery.status !== "Unterwegs") {
       alert("Bitte zuerst die Fahrt zur Lieferung starten.")
+      return
+    }
+
+    if (currentDelivery.pickupAddress && !currentDelivery.pickupDepartureTime) {
+      alert("Bitte zuerst die Abholung mit Ankunft und Abfahrt dokumentieren.")
       return
     }
 
@@ -5417,7 +5686,7 @@ function App() {
 
   async function uploadDeliveryDocuments(
     deliveryId: number,
-    documentType: "Frachtbrief" | "Tankbeleg",
+    documentType: "Frachtbrief" | "Tankbeleg" | "Tourunterlage" | "Schadensfoto",
     files: FileList | null
   ) {
     if (!files || files.length === 0) return
@@ -5427,12 +5696,12 @@ function App() {
     }
 
     const selectedFiles = Array.from(files)
-    const allowedTypes = ["application/pdf", "image/jpeg", "image/png"]
+    const allowedTypes = ["application/pdf", "image/jpeg", "image/png", "image/webp"]
     const invalidFile = selectedFiles.find(
       (file) => !allowedTypes.includes(file.type) || file.size > 15 * 1024 * 1024
     )
     if (invalidFile) {
-      alert("Bitte nur PDF-, JPG- oder PNG-Dateien bis maximal 15 MB hochladen.")
+      alert("Bitte nur PDF-, JPG-, PNG- oder WEBP-Dateien bis maximal 15 MB hochladen.")
       return
     }
 
@@ -5619,10 +5888,7 @@ function App() {
   const [newTourStatus, setNewTourStatus] =
     useState("Offen")
 
-  const [newTourKmStart, setNewTourKmStart] =
-    useState("")
-
-  const [newTourKmEnd, setNewTourKmEnd] =
+  const [newTourDistanceKm, setNewTourDistanceKm] =
     useState("")
 
   const [newDeliveries, setNewDeliveries] =
@@ -5630,15 +5896,32 @@ function App() {
       {
         customer: "",
         address: "",
+        pickupCustomer: "",
+        pickupAddress: "",
+        pickupTime: "",
+        pickupNote: "",
         plannedTime: "",
         kundeId: null,
         customerAmount: "",
         note: "",
+        shipmentType: "",
+        packageCount: "",
+        additionalCharges: [],
       },
     ])
 
   const [tourCreateSaving, setTourCreateSaving] =
     useState(false)
+
+  const [newTourDocuments, setNewTourDocuments] = useState<File[]>([])
+  const [newChargeDrafts, setNewChargeDrafts] = useState<Record<number, { type: string; label: string; amount: string }>>({})
+
+  const additionalChargeOptions = [
+    "Nachtarbeit",
+    "Sonntagsarbeit",
+    "Wartezeit",
+    "Sonstige",
+  ]
 
   function addNewDelivery() {
     setNewDeliveries((old) => [
@@ -5646,12 +5929,42 @@ function App() {
       {
         customer: "",
         address: "",
+        pickupCustomer: "",
+        pickupAddress: "",
+        pickupTime: "",
+        pickupNote: "",
         plannedTime: "",
         kundeId: null,
         customerAmount: "",
         note: "",
+        shipmentType: "",
+        packageCount: "",
+        additionalCharges: [],
       },
     ])
+  }
+
+  function addAdditionalCharge(index: number) {
+    const draft = newChargeDrafts[index]
+    if (!draft?.type || !draft.amount.trim()) {
+      alert("Bitte eine Zusatzleistung und einen Betrag eingeben.")
+      return
+    }
+    if (draft.type === "Sonstige" && !draft.label.trim()) {
+      alert("Bitte bei „Sonstige“ eine eigene Bezeichnung eingeben.")
+      return
+    }
+    const label = draft.type === "Sonstige" ? draft.label.trim() : draft.type
+    updateNewDelivery(index, "additionalCharges", [
+      ...(newDeliveries[index]?.additionalCharges || []),
+      { type: draft.type, label, amount: draft.amount },
+    ] as unknown as string)
+    setNewChargeDrafts((old) => ({ ...old, [index]: { type: "", label: "", amount: "" } }))
+  }
+
+  function removeAdditionalCharge(index: number, chargeIndex: number) {
+    const charges = newDeliveries[index]?.additionalCharges || []
+    updateNewDelivery(index, "additionalCharges", charges.filter((_, i) => i !== chargeIndex) as unknown as string)
   }
 
   function removeNewDelivery(
@@ -5665,7 +5978,7 @@ function App() {
   function updateNewDelivery(
     index: number,
     field: keyof NewDelivery,
-    value: string
+    value: string | AdditionalCharge[]
   ) {
     setNewDeliveries((old) =>
       old.map((delivery, i) =>
@@ -5686,15 +5999,23 @@ function App() {
     setNewTourDriverId("")
     setNewTourVehicleId("")
     setNewTourStatus("Offen")
-    setNewTourKmStart("")
-    setNewTourKmEnd("")
+    setNewTourDistanceKm("")
+    setNewTourDocuments([])
+    setNewChargeDrafts({})
     setNewDeliveries([
       {
         customer: "",
         address: "",
+        pickupCustomer: "",
+        pickupAddress: "",
+        pickupTime: "",
+        pickupNote: "",
         plannedTime: "",
         customerAmount: "",
         note: "",
+        shipmentType: "",
+        packageCount: "",
+        additionalCharges: [],
       },
     ])
   }
@@ -5744,28 +6065,6 @@ function App() {
       return
     }
 
-    const newKmStart = newTourKmStart.trim() === ""
-      ? null
-      : Number(newTourKmStart.replace(/\./g, "").replace(/,/g, "."))
-    const newKmEnd = newTourKmEnd.trim() === ""
-      ? null
-      : Number(newTourKmEnd.replace(/\./g, "").replace(/,/g, "."))
-
-    if (newKmStart != null && (!Number.isFinite(newKmStart) || newKmStart < 0)) {
-      alert("Bitte einen gültigen Startkilometerstand eingeben.")
-      return
-    }
-
-    if (newKmEnd != null && (!Number.isFinite(newKmEnd) || newKmEnd < 0)) {
-      alert("Bitte einen gültigen Endkilometerstand eingeben.")
-      return
-    }
-
-    if (newKmStart != null && newKmEnd != null && newKmEnd < newKmStart) {
-      alert("Der Endkilometerstand darf nicht kleiner als der Startkilometerstand sein.")
-      return
-    }
-
     const driverConflict = tours.find(
       (item) =>
         item.datum === newTourDate &&
@@ -5786,6 +6085,8 @@ function App() {
         (delivery) =>
           delivery.customer.trim() &&
           delivery.address.trim() &&
+          delivery.pickupAddress.trim() &&
+          delivery.pickupTime &&
           delivery.plannedTime
       )
 
@@ -5817,8 +6118,10 @@ function App() {
           newTourDriver.trim(),
         status:
           newTourStatus,
-        km_start: newKmStart,
-        km_ende: newKmEnd,
+        zu_fahrende_km:
+          newTourDistanceKm.trim() === ""
+            ? null
+            : Number(newTourDistanceKm.replace(/\./g, "").replace(/,/g, ".")),
       })
       .select()
       .single()
@@ -5845,6 +6148,10 @@ function App() {
             delivery.customer.trim(),
           adresse:
             delivery.address.trim(),
+          abholkunde: delivery.pickupCustomer.trim() || null,
+          abholadresse: delivery.pickupAddress.trim() || null,
+          abholzeit: delivery.pickupTime || null,
+          abholhinweis: delivery.pickupNote.trim() || null,
           kunde_id:
             delivery.kundeId || null,
           geplante_zeit:
@@ -5855,15 +6162,20 @@ function App() {
             delivery.customerAmount.trim() === ""
               ? null
               : Number(delivery.customerAmount.replace(",", ".")),
+          art_der_sendung: delivery.shipmentType.trim() || null,
+          packstuecke: delivery.packageCount.trim() === "" ? null : Number(delivery.packageCount),
+          zusatzkosten: delivery.additionalCharges || [],
           status: "Offen",
         })
       )
 
     const {
+      data: createdDeliveryRows,
       error: deliveriesError,
     } = await supabase
       .from("lieferungen")
       .insert(deliveryRows)
+      .select("id")
 
     setTourCreateSaving(false)
 
@@ -5882,6 +6194,32 @@ function App() {
       )
 
       return
+    }
+
+    if (newTourDocuments.length > 0 && createdDeliveryRows?.[0]?.id) {
+      for (const file of newTourDocuments) {
+        const safeName = file.name.replace(/[^a-zA-Z0-9._-]/g, "_")
+        const path = `touren/${tourData.id}/unterlagen/${crypto.randomUUID()}_${safeName}`
+        const { error: uploadError } = await supabase.storage
+          .from("dokumente")
+          .upload(path, file, { cacheControl: "3600", upsert: false })
+        if (uploadError) {
+          alert(`Tour wurde angelegt, aber ${file.name} konnte nicht hochgeladen werden: ${uploadError.message}`)
+          continue
+        }
+        const { error: documentError } = await supabase.from("tour_dokumente").insert({
+          tour_id: Number(tourData.id),
+          lieferung_id: Number(createdDeliveryRows[0].id),
+          dokumenttyp: "Tourunterlage",
+          dateiname: file.name,
+          speicherpfad: path,
+          erstellt_von: currentUser?.id || null,
+        })
+        if (documentError) {
+          await supabase.storage.from("dokumente").remove([path])
+          alert(`Die Datei ${file.name} konnte nicht verknüpft werden: ${documentError.message}`)
+        }
+      }
     }
 
     const createdTourId =
@@ -5924,6 +6262,8 @@ function App() {
 
   const [editingTourStatus, setEditingTourStatus] =
     useState("Offen")
+  const [editingInvoiceStatus, setEditingInvoiceStatus] =
+    useState<"Ausstehend" | "Gestellt" | "Bezahlt">("Ausstehend")
 
   const [editingDeliveryId, setEditingDeliveryId] =
     useState<number | null>(null)
@@ -5978,6 +6318,9 @@ function App() {
     setEditingTourStatus(
       selected.status
     )
+    setEditingInvoiceStatus(
+      selected.rechnungsstatus || "Ausstehend"
+    )
     setTourKmStart(
       selected.km_start != null
         ? String(selected.km_start)
@@ -5999,99 +6342,353 @@ function App() {
   function downloadTourInvoicePdf() {
     if (!tour) return
 
-    const amount = deliveries.reduce((sum, item) => {
-      const value = Number(item.customerAmount)
-      return Number.isFinite(value) ? sum + value : sum
-    }, 0)
+    const parseMoney = (value: unknown) => {
+      if (typeof value === "number") {
+        return Number.isFinite(value) ? Math.round(value * 100) / 100 : 0
+      }
 
-    const kilometers =
-      tourKmStart !== "" &&
-      tourKmEnd !== "" &&
-      Number(tourKmEnd) >= Number(tourKmStart)
-        ? Number(tourKmEnd) - Number(tourKmStart)
-        : null
+      let normalized = String(value ?? "")
+        .trim()
+        .replace(/\s/g, "")
 
-    const firstCustomer = deliveries.find((item) => item.customer.trim())
+      // Unterstützt deutsche und internationale Schreibweisen korrekt:
+      // 1.234,56 -> 1234.56 | 1234.56 -> 1234.56 | 1234,56 -> 1234.56
+      if (normalized.includes(",") && normalized.includes(".")) {
+        normalized = normalized.replace(/\./g, "").replace(",", ".")
+      } else if (normalized.includes(",")) {
+        normalized = normalized.replace(",", ".")
+      }
+
+      const parsed = Number(normalized)
+      return Number.isFinite(parsed) ? Math.round(parsed * 100) / 100 : 0
+    }
+
+    const euro = (value: number) =>
+      `${value.toFixed(2).replace(".", ",")} €`
+
+    const formatDate = (value: Date) =>
+      `${String(value.getDate()).padStart(2, "0")}.${String(value.getMonth() + 1).padStart(2, "0")}.${value.getFullYear()}`
+
     const invoiceNumber = `RE-${tour.tournummer || tour.id}-${String(tour.datum || "").replace(/-/g, "")}`
     const paymentDays = Math.max(0, Number(invoicePaymentDays) || 0)
     const dueDate = new Date()
     dueDate.setDate(dueDate.getDate() + paymentDays)
-    const formatDate = (value: Date) =>
-      `${String(value.getDate()).padStart(2, "0")}.${String(value.getMonth() + 1).padStart(2, "0")}.${value.getFullYear()}`
-    const euro = (value: number) =>
-      `${value.toFixed(2).replace(".", ",")} EUR`
+    const firstCustomer = deliveries.find((item) => item.customer.trim())
+    const billingCustomer = firstCustomer
+      ? (firstCustomer.kundeId != null
+          ? customers.find((customer) => customer.id === firstCustomer.kundeId) || null
+          : findCustomerByName(firstCustomer.customer))
+      : null
 
-    const doc = new jsPDF()
-    const left = 20
-    const right = 190
+    const invoiceRecipientName = billingCustomer?.rechnungName?.trim() || firstCustomer?.customer || "Kunde nicht angegeben"
+    const invoiceRecipientAddress = billingCustomer?.rechnungAdresse?.trim() || firstCustomer?.address || "Adresse nicht angegeben"
 
-    doc.setFontSize(9)
-    doc.text(invoiceCompanyName.trim() || "Ihr Firmenname", left, 20)
-    doc.text(invoiceCompanyAddress.trim() || "Ihre Firmenanschrift", left, 25)
-    if (invoiceCompanyTaxId.trim()) {
-      doc.text(`Steuer-/USt-ID: ${invoiceCompanyTaxId.trim()}`, left, 30)
+    type InvoiceLine = {
+      description: string
+      amount: number
+      detail?: string
+      kind: "base" | "extra"
     }
 
-    doc.setFontSize(20)
-    doc.text("RECHNUNG", right, 22, { align: "right" })
-    doc.setFontSize(10)
-    doc.text(`Rechnungsnummer: ${invoiceNumber}`, right, 32, { align: "right" })
-    doc.text(`Rechnungsdatum: ${formatDate(new Date())}`, right, 39, { align: "right" })
-
-    doc.setFontSize(12)
-    doc.text("Rechnungsempfänger", left, 58)
-    doc.setFontSize(10)
-    doc.text(firstCustomer?.customer || "Kunde nicht angegeben", left, 66)
-    doc.text(firstCustomer?.address || "Adresse nicht angegeben", left, 73)
-
-    doc.setFontSize(10)
-    doc.text(`Tour: ${tour.tournummer || "-"}`, left, 88)
-    doc.text(`Tourdatum: ${formatTourDate(tour.datum)}`, left, 95)
-    if (kilometers != null) {
-      doc.text(`Gefahrene Strecke: ${kilometers} km`, right, 95, { align: "right" })
-    }
-
-    let y = 112
-    doc.setFontSize(11)
-    doc.text("Leistung", left, y)
-    doc.text("Betrag", right, y, { align: "right" })
-    doc.line(left, y + 3, right, y + 3)
-    y += 13
-
+    const lines: InvoiceLine[] = []
     deliveries.forEach((item, index) => {
-      const value = Number(item.customerAmount)
-      if (!Number.isFinite(value)) return
-      const description = `${index + 1}. ${item.customer || "Transportleistung"} – Transportleistung`
-      doc.setFontSize(10)
-      doc.text(description.slice(0, 85), left, y)
-      doc.text(euro(value), right, y, { align: "right" })
-      y += 8
+      const baseAmount = parseMoney(item.customerAmount)
+      if (baseAmount > 0) {
+        const shipmentDetails = [
+          item.shipmentType?.trim(),
+          item.packageCount != null ? `${item.packageCount} Packstücke` : "",
+        ].filter(Boolean).join(" · ")
+
+        lines.push({
+          description: `${index + 1}. Transportleistung`,
+          detail: [item.customer || "Lieferung", shipmentDetails].filter(Boolean).join(" – "),
+          amount: baseAmount,
+          kind: "base",
+        })
+      }
+
+      ;(item.additionalCharges || []).forEach((charge) => {
+        const extraAmount = parseMoney(charge.amount)
+        if (extraAmount <= 0) return
+
+        lines.push({
+          description: charge.label?.trim() || charge.type || "Zusatzleistung",
+          detail: `${item.customer || `Lieferung ${index + 1}`}`,
+          amount: extraAmount,
+          kind: "extra",
+        })
+      })
     })
 
-    if (kilometers != null) {
-      doc.text(`Dokumentierte Strecke: ${kilometers} km`, left, y + 3)
+    const netAmount = Math.round(lines.reduce((sum, line) => sum + line.amount, 0) * 100) / 100
+    const vatAmount = Math.round(netAmount * 0.19 * 100) / 100
+    const grossAmount = Math.round((netAmount + vatAmount) * 100) / 100
+
+    const doc = new jsPDF()
+    const pageWidth = doc.internal.pageSize.getWidth()
+    const pageHeight = doc.internal.pageSize.getHeight()
+    const left = 18
+    const right = pageWidth - 18
+    const contentWidth = right - left
+
+    // Professionelles, ruhiges Rechnungsdesign
+    const navy = [29, 55, 89] as [number, number, number]
+    const blue = [48, 105, 177] as [number, number, number]
+    const paleBlue = [243, 247, 252] as [number, number, number]
+    const softBlue = [231, 239, 249] as [number, number, number]
+    const gray = [94, 105, 119] as [number, number, number]
+    const lightGray = [218, 225, 233] as [number, number, number]
+    const dark = [32, 40, 52] as [number, number, number]
+    const white = [255, 255, 255] as [number, number, number]
+
+    let y = 18
+
+    const drawFooter = () => {
+      doc.setDrawColor(...lightGray)
+      doc.setLineWidth(0.35)
+      doc.line(left, pageHeight - 19, right, pageHeight - 19)
+      doc.setFont("helvetica", "normal")
+      doc.setFontSize(7.5)
+      doc.setTextColor(...gray)
+      doc.text("Vielen Dank für Ihren Auftrag.", left, pageHeight - 12)
+      doc.text("UzGmbH", pageWidth / 2, pageHeight - 12, { align: "center" })
+    }
+
+    const ensureSpace = (required: number) => {
+      // Rechnungen werden bewusst auf einer A4-Seite gehalten.
+      // Das Layout ist kompakt aufgebaut; kein automatischer Seitenumbruch.
+      if (y + required > pageHeight - 29) {
+        y = Math.max(y, pageHeight - 29 - required)
+      }
+    }
+
+    // Schmale, hochwertige Kopfzeile
+    doc.setFillColor(...navy)
+    doc.rect(0, 0, pageWidth, 9, "F")
+    doc.setFillColor(...blue)
+    doc.rect(0, 9, pageWidth, 1.2, "F")
+
+    // Absender links
+    doc.setTextColor(...navy)
+    doc.setFont("helvetica", "bold")
+    doc.setFontSize(17)
+    doc.text(invoiceCompanyName.trim() || "Ihr Firmenname", left, y + 2)
+
+    doc.setFont("helvetica", "normal")
+    doc.setFontSize(8.8)
+    doc.setTextColor(...gray)
+    const companyAddressLines = invoiceCompanyAddress.trim()
+      ? invoiceCompanyAddress.trim().split(/\r?\n/).flatMap((line) => doc.splitTextToSize(line, 78))
+      : DEFAULT_INVOICE_COMPANY_ADDRESS.split(/\r?\n/)
+    doc.text(companyAddressLines, left, y + 9)
+
+    let companyInfoY = y + 9 + companyAddressLines.length * 4
+    if (invoiceCompanyTaxId.trim()) {
+      doc.setFontSize(8)
+      doc.text(`Steuer-/USt-ID: ${invoiceCompanyTaxId.trim()}`, left, companyInfoY + 2)
+      companyInfoY += 5
+    }
+
+    // Rechnungsdaten rechts
+    doc.setTextColor(...navy)
+    doc.setFont("helvetica", "bold")
+    doc.setFontSize(23)
+    doc.text("RECHNUNG", right, y + 2, { align: "right" })
+    doc.setDrawColor(...blue)
+    doc.setLineWidth(0.9)
+    doc.line(right - 43, y + 7, right, y + 7)
+
+    doc.setFont("helvetica", "normal")
+    doc.setFontSize(8.8)
+    doc.setTextColor(...gray)
+    doc.text(`Rechnungsnummer: ${invoiceNumber}`, right, y + 14, { align: "right" })
+    doc.text(`Rechnungsdatum: ${formatDate(new Date())}`, right, y + 20, { align: "right" })
+    doc.text(`Zahlungsziel: ${formatDate(dueDate)}`, right, y + 26, { align: "right" })
+
+    y = Math.max(companyInfoY + 12, y + 39)
+
+    // Rechnungsempfänger als dezente Karte
+    const recipientLines = invoiceRecipientAddress
+      .split(/\r?\n/)
+      .flatMap((line) => doc.splitTextToSize(line, contentWidth - 16))
+    const recipientNameLines = doc.splitTextToSize(invoiceRecipientName, contentWidth - 16)
+    const recipientHeight = Math.max(28, 15 + recipientNameLines.length * 5 + recipientLines.length * 4 + 5)
+
+    doc.setFillColor(...paleBlue)
+    doc.setDrawColor(...softBlue)
+    doc.setLineWidth(0.4)
+    doc.roundedRect(left, y, contentWidth, recipientHeight, 2.5, 2.5, "FD")
+
+    doc.setFont("helvetica", "bold")
+    doc.setFontSize(8)
+    doc.setTextColor(...blue)
+    doc.text("RECHNUNGSEMPFÄNGER", left + 6, y + 7)
+
+    doc.setFont("helvetica", "bold")
+    doc.setFontSize(10.8)
+    doc.setTextColor(...dark)
+    doc.text(recipientNameLines, left + 6, y + 14)
+
+    doc.setFont("helvetica", "normal")
+    doc.setFontSize(8.8)
+    doc.setTextColor(...gray)
+    doc.text(recipientLines, left + 6, y + 14 + recipientNameLines.length * 5 + 3)
+
+    y += recipientHeight + 6
+
+    // Kompakte Auftragsübersicht
+    doc.setDrawColor(...lightGray)
+    doc.setLineWidth(0.35)
+    doc.line(left, y - 4, right, y - 4)
+
+    doc.setFont("helvetica", "bold")
+    doc.setFontSize(7.6)
+    doc.setTextColor(...gray)
+    doc.text("TOURNUMMER", left, y + 2)
+    doc.text("TOURDATUM", left + 67, y + 2)
+    if (tour.zu_fahrende_km != null) {
+      doc.text("STRECKE", right, y + 2, { align: "right" })
+    }
+
+    doc.setFont("helvetica", "normal")
+    doc.setFontSize(8.6)
+    doc.setTextColor(...dark)
+    doc.text(tour.tournummer || "-", left, y + 8)
+    doc.text(formatTourDate(tour.datum), left + 67, y + 8)
+    if (tour.zu_fahrende_km != null) {
+      doc.text(`${tour.zu_fahrende_km} km`, right, y + 8, { align: "right" })
+    }
+    y += 15
+
+    const drawTableHeader = () => {
+      doc.setFillColor(...navy)
+      doc.roundedRect(left, y, contentWidth, 8, 1.6, 1.6, "F")
+      doc.setFont("helvetica", "bold")
+      doc.setFontSize(8.2)
+      doc.setTextColor(...white)
+      doc.text("LEISTUNG / BESCHREIBUNG", left + 5, y + 5.2)
+      doc.text("NETTO", right - 5, y + 5.2, { align: "right" })
       y += 11
     }
 
-    doc.line(left, y + 2, right, y + 2)
-    doc.setFontSize(12)
-    doc.text("Gesamtbetrag", left, y + 14)
-    doc.text(euro(amount), right, y + 14, { align: "right" })
-
+    doc.setFont("helvetica", "bold")
     doc.setFontSize(10)
-    doc.text(`Zahlungsziel: ${formatDate(dueDate)} (${paymentDays} Tage)`, left, y + 29)
-    if (invoiceBankDetails.trim()) {
-      doc.text("Zahlungsinformationen:", left, y + 40)
-      const bankLines = doc.splitTextToSize(invoiceBankDetails.trim(), 165)
-      doc.text(bankLines, left, y + 47)
+    doc.setTextColor(...navy)
+    doc.text("Leistungsübersicht", left, y - 3)
+    y += 1
+    drawTableHeader()
+
+    lines.forEach((line, index) => {
+      const detailLines = line.detail
+        ? doc.splitTextToSize(line.detail, contentWidth - 43)
+        : []
+      const rowHeight = detailLines.length > 0 ? 11 + (detailLines.length - 1) * 3 : 8
+      ensureSpace(rowHeight + 5)
+
+      if (index % 2 === 0) {
+        doc.setFillColor(249, 251, 253)
+        doc.rect(left, y - 4, contentWidth, rowHeight, "F")
+      }
+
+      doc.setFont("helvetica", line.kind === "extra" ? "normal" : "bold")
+      doc.setFontSize(8.5)
+      doc.setTextColor(...dark)
+      doc.text(line.description, left + 5, y + 1)
+
+      if (detailLines.length > 0) {
+        doc.setFont("helvetica", "normal")
+        doc.setFontSize(7.2)
+        doc.setTextColor(...gray)
+        doc.text(detailLines, left + 5, y + 6)
+      }
+
+      doc.setFont("helvetica", "normal")
+      doc.setFontSize(8.5)
+      doc.setTextColor(...dark)
+      doc.text(euro(line.amount), right - 5, y + 1, { align: "right" })
+
+      y += rowHeight
+      doc.setDrawColor(...lightGray)
+      doc.setLineWidth(0.25)
+      doc.line(left, y, right, y)
+      y += 1
+    })
+
+    if (lines.length === 0) {
+      doc.setFont("helvetica", "normal")
+      doc.setFontSize(9)
+      doc.setTextColor(...gray)
+      doc.text("Keine abrechenbaren Positionen hinterlegt.", left + 5, y + 1)
+      y += 14
     }
 
-    doc.setFontSize(8)
-    doc.text(
-      "Vielen Dank für Ihren Auftrag.",
-      left,
-      278
-    )
+    y += 4
+    ensureSpace(48)
+
+    // Klarer Summenblock rechts
+    doc.setFont("helvetica", "bold")
+    doc.setFontSize(8.8)
+    doc.setTextColor(...navy)
+    doc.text("Rechnungszusammenfassung", left, y)
+    y += 5
+
+    const summaryWidth = 82
+    const summaryLeft = right - summaryWidth
+    doc.setDrawColor(...lightGray)
+    doc.setLineWidth(0.35)
+    doc.line(summaryLeft, y, right, y)
+    y += 5
+
+    const drawSummaryRow = (label: string, value: number, bold = false) => {
+      doc.setFont("helvetica", bold ? "bold" : "normal")
+      doc.setFontSize(bold ? 11.5 : 9)
+      doc.setTextColor(...(bold ? navy : dark))
+      doc.text(label, summaryLeft, y)
+      doc.text(euro(value), right, y, { align: "right" })
+      y += bold ? 8 : 5
+    }
+
+    drawSummaryRow("Nettobetrag", netAmount)
+    drawSummaryRow("Mehrwertsteuer 19 %", vatAmount)
+
+    // Bruttobetrag als eigener, optisch zentrierter Abschlussblock
+    const grossBoxTop = y - 4
+    const grossBoxHeight = 15
+    doc.setFillColor(...softBlue)
+    doc.roundedRect(summaryLeft - 5, grossBoxTop, summaryWidth + 5, grossBoxHeight, 2, 2, "F")
+
+    const grossTextY = grossBoxTop + grossBoxHeight / 2 + 1.5
+    doc.setFont("helvetica", "bold")
+    doc.setFontSize(11.5)
+    doc.setTextColor(...navy)
+    doc.text("Bruttobetrag", summaryLeft, grossTextY)
+    doc.text(euro(grossAmount), right, grossTextY, { align: "right" })
+
+    y = grossBoxTop + grossBoxHeight + 10
+    ensureSpace(25)
+
+    // Zahlungsinformationen und Abschluss
+    doc.setFont("helvetica", "bold")
+    doc.setFontSize(9.5)
+    doc.setTextColor(...navy)
+    doc.text("Zahlungsinformationen", left, y)
+    y += 4
+
+    doc.setFont("helvetica", "normal")
+    doc.setFontSize(7.6)
+    doc.setTextColor(...gray)
+    const paymentText = `Bitte überweisen Sie den Rechnungsbetrag innerhalb von ${paymentDays} Tagen bis zum ${formatDate(dueDate)}.`
+    doc.text(doc.splitTextToSize(paymentText, contentWidth), left, y)
+    y += 4
+
+    if (invoiceBankDetails.trim()) {
+      const bankLines = doc.splitTextToSize(invoiceBankDetails.trim(), contentWidth)
+      doc.text(bankLines, left, y)
+      y += bankLines.length * 3 + 2
+    }
+
+    drawFooter()
+
     doc.save(`${invoiceNumber}.pdf`)
   }
 
@@ -6172,6 +6769,8 @@ function App() {
             : null,
         status:
           editingTourStatus,
+        rechnungsstatus:
+          editingInvoiceStatus,
         km_start: kmStart,
         km_ende: kmEnd,
       })
@@ -6189,13 +6788,35 @@ function App() {
 
     setTour((old) =>
       old
-        ? { ...old, km_start: kmStart, km_ende: kmEnd }
+        ? {
+            ...old,
+            status: editingTourStatus,
+            rechnungsstatus: editingInvoiceStatus,
+            fahrer: editingTourDriver.trim() || null,
+            fahrer_id: editingTourDriverId || null,
+            fahrzeug_id: editingTourVehicleId
+              ? Number(editingTourVehicleId)
+              : null,
+            km_start: kmStart,
+            km_ende: kmEnd,
+          }
         : old
     )
     setTours((old) =>
       old.map((item) =>
         item.id === tour.id
-          ? { ...item, km_start: kmStart, km_ende: kmEnd }
+          ? {
+              ...item,
+              status: editingTourStatus,
+              rechnungsstatus: editingInvoiceStatus,
+              fahrer: editingTourDriver.trim() || null,
+              fahrer_id: editingTourDriverId || null,
+              fahrzeug_id: editingTourVehicleId
+                ? Number(editingTourVehicleId)
+                : null,
+              km_start: kmStart,
+              km_ende: kmEnd,
+            }
           : item
       )
     )
@@ -7583,6 +8204,7 @@ function App() {
       | "driver-management"
       | "work-time"
       | "reports"
+      | "finance"
       | "documents"
       | "warnings"
       | "messages"
@@ -7603,6 +8225,7 @@ function App() {
       "driver-management": "fahrer",
       "work-time": "fahrer",
       reports: "auswertungen",
+      finance: "auswertungen",
       documents: "dokumente",
       warnings: "warnungen",
     }
@@ -7611,7 +8234,8 @@ function App() {
     if (nextPage === "sops" && !currentUser) return
     if ((nextPage === "customers" || nextPage === "acquisition") && !(isAdmin || currentUser?.rolle === "Disponent" || hasPermission("kunden") || hasPermission("touren_verwalten") || hasPermission("touren_anlegen"))) return
     const canOpenReports = nextPage === "reports" && canViewReports
-    if (nextPage !== "users" && nextPage !== "customers" && nextPage !== "acquisition" && nextPage !== "sops" && !canOpenReports && requiredPermission[nextPage] && !hasPermission(requiredPermission[nextPage]!)) return
+    const canOpenFinance = nextPage === "finance" && canViewFinance
+    if (nextPage !== "users" && nextPage !== "customers" && nextPage !== "acquisition" && nextPage !== "sops" && !canOpenReports && !canOpenFinance && requiredPermission[nextPage] && !hasPermission(requiredPermission[nextPage]!)) return
 
     setPage(nextPage)
 
@@ -7643,6 +8267,10 @@ function App() {
 
     if (nextPage === "defect") {
       loadDefectCounts()
+    }
+
+    if (nextPage === "finance") {
+      void loadFinanceRows()
     }
 
     if (nextPage === "reports") {
@@ -8614,6 +9242,12 @@ function App() {
           onClick={() => navigateTo("reports")}
         >
           <span style={{ marginRight: "8px" }}>📊</span>Auswertung
+        </button>}
+        {canViewFinance && <button
+          className={page === "finance" ? "nav active" : "nav"}
+          onClick={() => navigateTo("finance")}
+        >
+          <span style={{ marginRight: "8px" }}>💶</span>Finanzen & Kalkulation
         </button>}
 
         {hasPermission("warnungen") && (
@@ -10676,22 +11310,48 @@ function App() {
                     </div>
                   )}
 
+                  {delivery.status === "Unterwegs" &&
+                    delivery.pickupAddress &&
+                    (activeDelivery === delivery.id || getNextDeliveryId(deliveries) === delivery.id) && (
+                    <div style={{ marginTop: "14px", marginBottom: "14px", padding: "14px", borderRadius: "12px", background: "#fff7ed", border: "2px solid #f59e0b" }}>
+                      <h3 style={{ marginTop: 0 }}>📦 Abholung der Ware</h3>
+                      <p><strong>Auftraggeber:</strong> {delivery.pickupCustomer || "Nicht angegeben"}</p>
+                      <p><strong>Abholadresse:</strong> {delivery.pickupAddress}</p>
+                      <p><strong>Geplante Abholzeit:</strong> {delivery.pickupTime || "Nicht angegeben"} Uhr</p>
+                      {delivery.pickupNote && <p><strong>Hinweise:</strong> {delivery.pickupNote}</p>}
+                      <div className="time-section">
+                        <label><strong>Ankunft bei der Abholstelle</strong></label>
+                        <div className="time-row">
+                          <input type="time" value={delivery.pickupArrivalTime || ""} onChange={(event) => setPickupArrivalTime(delivery.id, event.target.value)} disabled={deliverySaving} />
+                          <button className="secondary-button" disabled={deliverySaving} onClick={() => setPickupArrivalTime(delivery.id, getCurrentTime())}>Jetzt</button>
+                        </div>
+                      </div>
+                      <div className="time-section">
+                        <label><strong>Abfahrt von der Abholstelle</strong></label>
+                        <div className="time-row">
+                          <input type="time" value={delivery.pickupDepartureTime || ""} onChange={(event) => setPickupDepartureTime(delivery.id, event.target.value)} disabled={deliverySaving || !delivery.pickupArrivalTime} />
+                          <button className="secondary-button" disabled={deliverySaving || !delivery.pickupArrivalTime} onClick={() => setPickupDepartureTime(delivery.id, getCurrentTime())}>Jetzt</button>
+                        </div>
+                      </div>
+                      <div className="note-section">
+                        <label><strong>Beschädigung / Abweichung bei der Abholung</strong></label>
+                        <input type="file" accept="image/jpeg,image/png" multiple disabled={deliveryUploading === delivery.id} onChange={(event) => uploadDeliveryDocuments(delivery.id, "Schadensfoto", event.target.files)} />
+                        <small>JPG oder PNG, maximal 15 MB je Datei.</small>
+                      </div>
+                    </div>
+                  )}
+
                   {delivery.status ===
                     "Unterwegs" &&
-                    activeDelivery ===
-                      delivery.id && (
+                    (activeDelivery === delivery.id || getNextDeliveryId(deliveries) === delivery.id) && (
                       <div className="delivery-actions">
 
                         <button
                           className="primary-button"
-                          disabled={deliverySaving}
-                          onClick={() =>
-                            arriveAtCustomer(
-                              delivery.id
-                            )
-                          }
+                          disabled={deliverySaving || Boolean(delivery.pickupAddress && !delivery.pickupDepartureTime)}
+                          onClick={() => arriveAtCustomer(delivery.id)}
                         >
-                          📍 Ankunft beim Kunden – jetzt
+                          {delivery.pickupAddress && !delivery.pickupDepartureTime ? "⏳ Erst Abholung abschließen" : "📍 Ankunft beim Kunden – jetzt"}
                         </button>
 
                         <div className="manual-time-box">
@@ -10726,10 +11386,40 @@ function App() {
                       </div>
                     )}
 
+                  {(deliveryDocuments[delivery.id] || []).length > 0 && (
+                    <div
+                      className="note-section"
+                      style={{
+                        background: "#eff6ff",
+                        border: "2px solid #2563eb",
+                        borderRadius: "10px",
+                        padding: "12px",
+                        marginTop: "14px",
+                      }}
+                    >
+                      <strong>📄 Dokumente vom Disponenten</strong>
+                      <p style={{ margin: "6px 0 10px", color: "#334155" }}>
+                        Diese Unterlagen wurden bei der Touranlage hinterlegt und stehen dir direkt zur Verfügung.
+                      </p>
+                      <ul style={{ margin: 0, paddingLeft: "20px" }}>
+                        {(deliveryDocuments[delivery.id] || []).map((document) => (
+                          <li key={`preloaded-${document.id}`} style={{ marginTop: "4px" }}>
+                            <button
+                              type="button"
+                              className="link-button"
+                              onClick={() => openTourDocument(document)}
+                            >
+                              {document.dokumenttyp}: {document.dateiname}
+                            </button>
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
+
                   {delivery.status ===
                     "Beim Kunden" &&
-                    activeDelivery ===
-                      delivery.id && (
+                    (activeDelivery === delivery.id || getNextDeliveryId(deliveries) === delivery.id) && (
                       <div className="completion-area">
 
                         <h3 style={{ marginBottom: "6px" }}>
@@ -10959,6 +11649,18 @@ function App() {
                             onChange={(event) => uploadDeliveryDocuments(delivery.id, "Tankbeleg", event.target.files)}
                           />
                           <small>PDF, JPG oder PNG, maximal 15 MB je Datei.</small>
+
+                          <label style={{ marginTop: "12px" }}>
+                            <strong>Schadensbilder / Fotodokumentation (optional)</strong>
+                          </label>
+                          <input
+                            type="file"
+                            accept="image/jpeg,image/png,image/webp"
+                            multiple
+                            disabled={deliveryUploading === delivery.id}
+                            onChange={(event) => uploadDeliveryDocuments(delivery.id, "Schadensfoto", event.target.files)}
+                          />
+                          <small>JPG, PNG oder WEBP, maximal 15 MB je Datei. Bitte Schäden an Ware oder Verpackung fotografieren.</small>
 
                           {(deliveryDocuments[delivery.id] || []).length > 0 && (
                             <div style={{ marginTop: "10px" }}>
@@ -11576,51 +12278,16 @@ function App() {
 
               </div>
 
-              <div
-                style={{
-                  display: "grid",
-                  gridTemplateColumns: "repeat(auto-fit,minmax(180px,1fr))",
-                  gap: "12px",
-                }}
-              >
-                <div className="form-group">
-                  <label>Start-km (optional)</label>
-                  <input
-                    type="number"
-                    min="0"
-                    value={newTourKmStart}
-                    onChange={(event) => setNewTourKmStart(event.target.value)}
-                    placeholder="z. B. 82000"
-                  />
-                </div>
-                <div className="form-group">
-                  <label>End-km (optional)</label>
-                  <input
-                    type="number"
-                    min="0"
-                    value={newTourKmEnd}
-                    onChange={(event) => setNewTourKmEnd(event.target.value)}
-                    placeholder="z. B. 82400"
-                  />
-                </div>
-                <div className="form-group">
-                  <label>Gefahrene km</label>
-                  <div
-                    style={{
-                      padding: "10px 12px",
-                      background: "#f5f5f5",
-                      borderRadius: "8px",
-                      minHeight: "42px",
-                      boxSizing: "border-box",
-                    }}
-                  >
-                    {newTourKmStart !== "" &&
-                    newTourKmEnd !== "" &&
-                    Number(newTourKmEnd) >= Number(newTourKmStart)
-                      ? `${Number(newTourKmEnd) - Number(newTourKmStart)} km`
-                      : "–"}
-                  </div>
-                </div>
+              <div className="form-group">
+                <label>Zu fahrende km (optional)</label>
+                <input
+                  type="number"
+                  min="0"
+                  step="0.1"
+                  value={newTourDistanceKm}
+                  onChange={(event) => setNewTourDistanceKm(event.target.value)}
+                  placeholder="z. B. 120"
+                />
               </div>
 
 
@@ -11653,6 +12320,25 @@ function App() {
 
               </div>
 
+            </div>
+
+            <div className="card">
+              <h2>Tourunterlagen für den Fahrer</h2>
+              <p>PDF-, JPG- oder PNG-Dateien können der Tour beigefügt werden. Der Fahrer kann sie später in der App öffnen oder herunterladen.</p>
+              <div className="form-group">
+                <label>Dokumente auswählen</label>
+                <input
+                  type="file"
+                  multiple
+                  accept=".pdf,.jpg,.jpeg,.png,application/pdf,image/jpeg,image/png"
+                  onChange={(event) => setNewTourDocuments(Array.from(event.target.files || []))}
+                />
+                {newTourDocuments.length > 0 && (
+                  <ul className="document-selection">
+                    {newTourDocuments.map((file) => <li key={`${file.name}-${file.size}`}>{file.name}</li>)}
+                  </ul>
+                )}
+              </div>
             </div>
 
             <div className="card">
@@ -11694,6 +12380,34 @@ function App() {
                     <h3>
                       Lieferung {index + 1}
                     </h3>
+
+                    <div
+                      style={{
+                        marginBottom: "16px",
+                        padding: "14px",
+                        borderRadius: "12px",
+                        background: "#fff7ed",
+                        border: "2px solid #f59e0b",
+                      }}
+                    >
+                      <h4 style={{ marginTop: 0, marginBottom: "10px" }}>📦 Abholung beim Auftraggeber</h4>
+                      <div className="form-group">
+                        <label>Abholkunde / Auftraggeber</label>
+                        <input type="text" value={delivery.pickupCustomer} onChange={(event) => updateNewDelivery(index, "pickupCustomer", event.target.value)} placeholder="Name des Auftraggebers" />
+                      </div>
+                      <div className="form-group">
+                        <label>Abholadresse *</label>
+                        <input type="text" value={delivery.pickupAddress} onChange={(event) => updateNewDelivery(index, "pickupAddress", event.target.value)} placeholder="Straße, PLZ Ort" />
+                      </div>
+                      <div className="form-group">
+                        <label>Geplante Abholzeit *</label>
+                        <input type="time" value={delivery.pickupTime} onChange={(event) => updateNewDelivery(index, "pickupTime", event.target.value)} />
+                      </div>
+                      <div className="form-group">
+                        <label>Hinweise zur Abholung</label>
+                        <textarea value={delivery.pickupNote} onChange={(event) => updateNewDelivery(index, "pickupNote", event.target.value)} placeholder="z. B. Anmeldung bei Security, Rampe, Ansprechpartner" rows={2} />
+                      </div>
+                    </div>
 
                     <div className="form-group">
 
@@ -11787,6 +12501,72 @@ function App() {
                       />
                     </div>
 
+                    <div
+                      style={{
+                        display: "grid",
+                        gridTemplateColumns: "repeat(auto-fit,minmax(180px,1fr))",
+                        gap: "12px",
+                      }}
+                    >
+                      <div className="form-group">
+                        <label>Art der Sendung</label>
+                        <input
+                          type="text"
+                          value={delivery.shipmentType}
+                          onChange={(event) => updateNewDelivery(index, "shipmentType", event.target.value)}
+                          placeholder="z. B. Palette"
+                        />
+                      </div>
+                      <div className="form-group">
+                        <label>Anzahl der Packstücke</label>
+                        <input
+                          type="number"
+                          min="0"
+                          value={delivery.packageCount}
+                          onChange={(event) => updateNewDelivery(index, "packageCount", event.target.value)}
+                          placeholder="z. B. 4"
+                        />
+                      </div>
+                    </div>
+
+                    {(isAdmin || isDisponent) && (
+                      <div className="form-group">
+                        <label>Zusatzkosten / Zusatzleistungen</label>
+                        {(delivery.additionalCharges || []).map((charge, chargeIndex) => (
+                          <div key={chargeIndex} className="charge-row">
+                            <span>{charge.label}</span>
+                            <strong>{Number(charge.amount.replace(",", ".") || 0).toLocaleString("de-DE", { style: "currency", currency: "EUR" })}</strong>
+                            <button type="button" className="icon-button" onClick={() => removeAdditionalCharge(index, chargeIndex)} aria-label="Zusatzleistung entfernen">×</button>
+                          </div>
+                        ))}
+                        <div className="charge-editor">
+                          <select
+                            value={newChargeDrafts[index]?.type || ""}
+                            onChange={(event) => setNewChargeDrafts((old) => ({ ...old, [index]: { ...(old[index] || { label: "", amount: "" }), type: event.target.value } }))}
+                          >
+                            <option value="">Zusatzleistung auswählen</option>
+                            {additionalChargeOptions.map((option) => <option key={option} value={option}>{option}</option>)}
+                          </select>
+                          {newChargeDrafts[index]?.type === "Sonstige" && (
+                            <input
+                              type="text"
+                              value={newChargeDrafts[index]?.label || ""}
+                              onChange={(event) => setNewChargeDrafts((old) => ({ ...old, [index]: { ...(old[index] || { type: "Sonstige", amount: "" }), label: event.target.value } }))}
+                              placeholder="Eigene Bezeichnung, z. B. Spesen"
+                            />
+                          )}
+                          <input
+                            type="text"
+                            inputMode="decimal"
+                            value={newChargeDrafts[index]?.amount || ""}
+                            onChange={(event) => setNewChargeDrafts((old) => ({ ...old, [index]: { ...(old[index] || { type: "", label: "" }), amount: event.target.value } }))}
+                            placeholder="Betrag in €"
+                          />
+                          <button type="button" className="secondary-button" onClick={() => addAdditionalCharge(index)}>+ Hinzufügen</button>
+                        </div>
+                      </div>
+                    )}
+
                     <div className="form-group">
                       <label>Vom Kunden bezahlt (€)</label>
                       <input
@@ -11848,41 +12628,126 @@ function App() {
               <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",gap:"12px",flexWrap:"wrap"}}>
                 <div>
                   <h2>Touren verwalten</h2>
-                  <p style={{marginBottom:"8px"}}>Tour auswählen und bearbeiten.</p>
-                  <label style={{display:"flex",alignItems:"center",gap:"8px",cursor:"pointer"}}>
+                  <p style={{marginBottom:"8px"}}>Touren durchsuchen und bearbeiten.</p>
+                  <div style={{display:"grid",gridTemplateColumns:"minmax(220px,1fr) minmax(180px,220px)",gap:"10px",marginTop:"14px"}}>
                     <input
-                      type="checkbox"
-                      checked={showCompletedTours}
-                      onChange={(event) => setShowCompletedTours(event.target.checked)}
+                      value={tourSearchTerm}
+                      onChange={(event) => setTourSearchTerm(event.target.value)}
+                      placeholder="🔎 Tournummer, Fahrer, Status oder Suchwort..."
+                      aria-label="Touren durchsuchen"
                     />
-                    Abgeschlossene anzeigen
-                  </label>
+                    <select
+                      value={tourStatusFilter}
+                      onChange={(event) => setTourStatusFilter(event.target.value)}
+                      aria-label="Tourstatus filtern"
+                    >
+                      <option value="Alle">Alle Status</option>
+                      <option value="Tour offen">Tour offen</option>
+                      <option value="Tour abgeschlossen">Tour abgeschlossen</option>
+                      <option value="Rechnung ausstehend">Rechnung ausstehend</option>
+                      <option value="Rechnung gestellt">Rechnung gestellt</option>
+                      <option value="Rechnung bezahlt">Rechnung bezahlt</option>
+                    </select>
+                  </div>
                 </div>
                 <button className="primary-button" onClick={() => navigateTo("tour-create")}>+ Neue Tour</button>
               </div>
 
               <div style={{marginTop:"18px"}}>
-                <label style={{fontWeight:600}}>Tour auswählen</label>
-                <select
-                  value={selectedTourId ? String(selectedTourId) : ""}
-                  onChange={(event) => {
-                    const id = Number(event.target.value)
-                    if (id) selectTour(id)
-                  }}
-                  style={{width:"100%",marginTop:"6px"}}
-                >
-                  <option value="">Bitte Tour auswählen</option>
-                  {visibleTours.map((item) => (
-                    <option key={item.id} value={item.id}>
-                      {item.tournummer} · {formatTourDate(item.datum)} · {item.fahrer || "Kein Fahrer"} · {item.status}
-                    </option>
-                  ))}
-                </select>
+                <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",gap:"12px",flexWrap:"wrap",marginBottom:"12px"}}>
+                  <div>
+                    <h3 style={{margin:0}}>Verfügbare Touren</h3>
+                    <p style={{margin:"4px 0 0",color:"#64748b",fontSize:"14px"}}>
+                      {managementVisibleTours.length} Tour{managementVisibleTours.length === 1 ? "" : "en"} gefunden
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    className="secondary-button"
+                    onClick={() => { void loadTours(selectedTourId) }}
+                    disabled={tourLoading}
+                  >
+                    {tourLoading ? "Wird aktualisiert..." : "↻ Aktualisieren"}
+                  </button>
+                </div>
+
+                {managementVisibleTours.length === 0 ? (
+                  <div style={{padding:"20px",border:"1px solid #dbe3ef",borderRadius:"14px",background:"#f8fafc",color:"#64748b",textAlign:"center"}}>
+                    Keine Touren für die gewählten Filter gefunden.
+                  </div>
+                ) : (
+                  <div style={{display:"grid",gap:"10px"}}>
+                    {managementVisibleTours.map((item) => {
+                      const isSelected = selectedTourId === item.id
+                      const isCompleted = isCompletedTour(item)
+                      const invoiceStatus = item.rechnungsstatus || "Ausstehend"
+
+                      return (
+                        <div
+                          key={item.id}
+                          style={{
+                            border:`1px solid ${isSelected ? "#2563eb" : "#dbe3ef"}`,
+                            borderRadius:"14px",
+                            padding:"14px 16px",
+                            background:isSelected ? "#eff6ff" : "#ffffff",
+                            boxShadow:isSelected ? "0 0 0 2px rgba(37,99,235,0.10)" : "none",
+                          }}
+                        >
+                          <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",gap:"12px",flexWrap:"wrap"}}>
+                            <div style={{minWidth:0}}>
+                              <div style={{fontWeight:700,color:"#1e293b",fontSize:"16px"}}>
+                                {item.tournummer}
+                              </div>
+                              <div style={{marginTop:"4px",fontSize:"13px",color:"#64748b"}}>
+                                {formatTourDate(item.datum)} · {item.fahrer || "Kein Fahrer"}
+                              </div>
+                            </div>
+                            <div style={{display:"flex",gap:"6px",flexWrap:"wrap",justifyContent:"flex-end"}}>
+                              <span className="delivery-status">{isCompleted ? "Abgeschlossen" : item.status}</span>
+                              <span className="delivery-status">{`Rechnung: ${invoiceStatus}`}</span>
+                            </div>
+                          </div>
+
+                          <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",gap:"12px",flexWrap:"wrap",marginTop:"12px",paddingTop:"10px",borderTop:"1px solid #e5e7eb"}}>
+                            <span style={{fontSize:"13px",color:"#64748b"}}>
+                              Tour-ID: {item.id}
+                            </span>
+                            <button
+                              type="button"
+                              className={isSelected ? "primary-button" : "secondary-button"}
+                              onClick={() => { void selectTour(item.id) }}
+                            >
+                              {isSelected ? "Tour ausgewählt" : "Tour öffnen"}
+                            </button>
+                          </div>
+                        </div>
+                      )
+                    })}
+                  </div>
+                )}
               </div>
             </div>
 
             {tour && (
               <>
+                <div className="card" style={{padding:"16px 20px",background:"#f8fafc"}}>
+                  <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",gap:"12px",flexWrap:"wrap"}}>
+                    <div>
+                      <h3 style={{margin:0}}>Ausgewählte Tour</h3>
+                      <p style={{margin:"4px 0 0",color:"#64748b"}}>{editingTourNumber || tour.tournummer} · {formatTourDate(editingTourDate || tour.datum)}</p>
+                    </div>
+                    <div style={{display:"flex",gap:"8px",flexWrap:"wrap"}}>
+                      <button className="secondary-button" onClick={() => setManagementTourOpen((value) => !value)}>
+                        {managementTourOpen ? "Tourdetails schließen" : "Tourdetails öffnen"}
+                      </button>
+                      <button className="secondary-button" onClick={() => setManagementDeliveriesOpen((value) => !value)}>
+                        {managementDeliveriesOpen ? "Lieferungen schließen" : `Lieferungen öffnen (${deliveries.length})`}
+                      </button>
+                    </div>
+                  </div>
+                </div>
+
+                {managementTourOpen && (
                 <div className="card">
                   <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",gap:"12px",flexWrap:"wrap"}}>
                     <div>
@@ -11945,11 +12810,19 @@ function App() {
                       </div>
                     </div>
                     <div className="form-group">
-                      <label>Status</label>
+                      <label>Tourstatus</label>
                       <select value={editingTourStatus} onChange={(e)=>setEditingTourStatus(e.target.value)}>
                         <option value="Offen">Offen</option>
                         <option value="Unterwegs">Unterwegs</option>
                         <option value="Abgeschlossen">Abgeschlossen</option>
+                      </select>
+                    </div>
+                    <div className="form-group">
+                      <label>Rechnungsstatus</label>
+                      <select value={editingInvoiceStatus} onChange={(e)=>setEditingInvoiceStatus(e.target.value as "Ausstehend" | "Gestellt" | "Bezahlt")}>
+                        <option value="Ausstehend">Rechnung ausstehend</option>
+                        <option value="Gestellt">Rechnung gestellt</option>
+                        <option value="Bezahlt">Rechnung bezahlt</option>
                       </select>
                     </div>
                   </div>
@@ -11965,7 +12838,7 @@ function App() {
                           <p style={{margin:"6px 0 10px",color:"#64748b",fontSize:"0.9rem"}}>Diese Angaben werden automatisch gespeichert und bei zukünftigen Rechnungen wieder vorausgefüllt.</p>
                            <div style={{display:"grid",gap:"8px",marginTop:"8px"}}>
                             <input value={invoiceCompanyName} onChange={(event) => setInvoiceCompanyName(event.target.value)} placeholder="Firmenname" />
-                            <input value={invoiceCompanyAddress} onChange={(event) => setInvoiceCompanyAddress(event.target.value)} placeholder="Firmenanschrift" />
+                            <textarea value={invoiceCompanyAddress} onChange={(event) => setInvoiceCompanyAddress(event.target.value)} placeholder="Firmenanschrift" rows={3} />
                             <input value={invoiceCompanyTaxId} onChange={(event) => setInvoiceCompanyTaxId(event.target.value)} placeholder="Steuer-/USt-ID (optional)" />
                             <label style={{fontWeight:700,fontSize:"14px",marginTop:"2px"}}>Zahlungsziel in Tagen</label>
                             <input value={invoicePaymentDays} onChange={(event) => setInvoicePaymentDays(event.target.value)} type="number" min="0" placeholder="z. B. 14" aria-label="Zahlungsziel in Tagen" />
@@ -11981,7 +12854,9 @@ function App() {
                     <button className="secondary-button" disabled={managementSaving} onClick={deleteTour}>🗑 Löschen</button>
                   </div>
                 </div>
+                )}
 
+                {managementDeliveriesOpen && (
                 <div className="card">
                   <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",gap:"12px",flexWrap:"wrap"}}>
                     <div>
@@ -12020,9 +12895,31 @@ function App() {
                                 <div className="form-group"><label>Zustellzeit</label><input type="time" value={editingDeliveryTime} onChange={(e)=>setEditingDeliveryTime(e.target.value)} /></div>
                                 <div className="form-group"><label>Vom Kunden bezahlt (€)</label><input inputMode="decimal" value={editingDeliveryAmount} onChange={(e)=>setEditingDeliveryAmount(e.target.value)} placeholder="z. B. 125,00" /></div>
                               </div>
-                              <div style={{display:"flex",gap:"8px"}}>
-                                <button className="primary-button" disabled={managementSaving} onClick={saveEditedDelivery}>Speichern</button>
-                                <button className="secondary-button" onClick={cancelEditingDelivery}>Abbrechen</button>
+                              <div
+                                style={{
+                                  display: "flex",
+                                  justifyContent: "flex-end",
+                                  alignItems: "center",
+                                  gap: "10px",
+                                  marginTop: "24px",
+                                  paddingTop: "16px",
+                                  borderTop: "1px solid #e5e7eb",
+                                  flexWrap: "wrap",
+                                }}
+                              >
+                                <button
+                                  className="primary-button"
+                                  disabled={managementSaving}
+                                  onClick={saveEditedDelivery}
+                                >
+                                  Speichern
+                                </button>
+                                <button
+                                  className="secondary-button"
+                                  onClick={cancelEditingDelivery}
+                                >
+                                  Abbrechen
+                                </button>
                               </div>
                             </>
                           ) : (
@@ -12049,6 +12946,7 @@ function App() {
                     </div>
                   )}
                 </div>
+                )}
               </>
             )}
           </section>
@@ -12610,6 +13508,58 @@ function App() {
                   ))}
                 </div>
               )}
+            </div>
+          </section>
+        )}
+
+        {page === "finance" && canViewFinance && (
+          <section>
+            <div className="card">
+              <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",gap:"12px",flexWrap:"wrap"}}>
+                <div><h2>💶 Finanzen & Kalkulation</h2><p style={{marginBottom:0}}>Monatlichen Gewinn im Blick behalten und einzelne Touren vorab kalkulieren.</p></div>
+                <label style={{minWidth:"170px"}}>Monat<input type="month" value={financeMonth} onChange={(e) => setFinanceMonth(e.target.value)} onBlur={() => void loadFinanceRows()} /></label>
+              </div>
+              <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(170px,1fr))",gap:"12px",marginTop:"18px"}}>
+                <div className="card" style={{background:"#ecfdf5",border:"1px solid #bbf7d0"}}><div style={{fontSize:"24px"}}>📈</div><strong>Einnahmen</strong><div style={{fontSize:"25px",fontWeight:800,color:"#166534"}}>{euro(financeIncome)}</div></div>
+                <div className="card" style={{background:"#fff1f2",border:"1px solid #fecdd3"}}><div style={{fontSize:"24px"}}>📉</div><strong>Ausgaben</strong><div style={{fontSize:"25px",fontWeight:800,color:"#be123c"}}>{euro(financeExpenses)}</div></div>
+                <div className="card" style={{background:financeResult >= 0 ? "#eff6ff" : "#fff7ed",border:financeResult >= 0 ? "1px solid #bfdbfe" : "1px solid #fed7aa"}}><div style={{fontSize:"24px"}}>{financeResult >= 0 ? "🟢" : "🔴"}</div><strong>Monatsergebnis</strong><div style={{fontSize:"25px",fontWeight:800,color:financeResult >= 0 ? "#1d4ed8" : "#c2410c"}}>{euro(financeResult)}</div><small>{financeResult >= 0 ? "Überschuss" : "Defizit"}</small></div>
+              </div>
+              <div style={{marginTop:"18px",padding:"14px",borderRadius:"12px",background:"#f8fafc",border:"1px solid #e2e8f0"}}>
+                <h3 style={{marginTop:0}}>➕ Neue Buchung</h3>
+                <div className="form-grid">
+                  <label>Datum<input type="date" value={financeForm.datum} onChange={(e) => setFinanceForm({...financeForm, datum:e.target.value})}/></label>
+                  <label>Typ<select value={financeForm.typ} onChange={(e) => setFinanceForm({...financeForm, typ:e.target.value as "Einnahme" | "Ausgabe", kategorie:e.target.value === "Einnahme" ? "Tourumsatz" : "Diesel"})}><option>Einnahme</option><option>Ausgabe</option></select></label>
+                  <label>Kategorie<input value={financeForm.kategorie} onChange={(e) => setFinanceForm({...financeForm, kategorie:e.target.value})} placeholder="z. B. Diesel, Lohn, Versicherung"/></label>
+                  <label>Betrag in €<input type="number" min="0" step="0.01" value={financeForm.betrag} onChange={(e) => setFinanceForm({...financeForm, betrag:e.target.value})}/></label>
+                  <label>Tour-ID optional<input type="number" min="1" value={financeForm.tour_id} onChange={(e) => setFinanceForm({...financeForm, tour_id:e.target.value})}/></label>
+                  <label>Beschreibung<input value={financeForm.beschreibung} onChange={(e) => setFinanceForm({...financeForm, beschreibung:e.target.value})} placeholder="z. B. Diesel Tankstelle"/></label>
+                </div>
+                <label style={{display:"flex",alignItems:"center",gap:"8px",margin:"10px 0"}}><input type="checkbox" checked={financeForm.bezahlt} onChange={(e) => setFinanceForm({...financeForm, bezahlt:e.target.checked})}/> Bereits bezahlt / eingegangen</label>
+                <button type="button" className="primary-button" onClick={() => void saveFinanceEntry()} disabled={financeLoading}>Buchung speichern</button>
+                {financeMessage && <p className="info-message">{financeMessage}</p>}
+              </div>
+            </div>
+            <div className="card">
+              <h3>🧮 Tour-Kalkulator</h3><p>Geplante Werte eingeben: Kraftstoff, Fahrerlohn, Gesamtkosten und Deckungsbeitrag werden automatisch berechnet.</p>
+              <div className="form-grid">
+                <label>Umsatz in €<input type="number" min="0" step="0.01" value={financeCalc.umsatz} onChange={(e) => setFinanceCalc({...financeCalc, umsatz:e.target.value})}/></label>
+                <label>Kilometer<input type="number" min="0" value={financeCalc.kilometer} onChange={(e) => setFinanceCalc({...financeCalc, kilometer:e.target.value})}/></label>
+                <label>Verbrauch l/100 km<input type="number" min="0" step="0.1" value={financeCalc.verbrauch} onChange={(e) => setFinanceCalc({...financeCalc, verbrauch:e.target.value})}/></label>
+                <label>Dieselpreis €/l<input type="number" min="0" step="0.01" value={financeCalc.dieselpreis} onChange={(e) => setFinanceCalc({...financeCalc, dieselpreis:e.target.value})}/></label>
+                <label>Fahrerstunden<input type="number" min="0" step="0.25" value={financeCalc.fahrerstunden} onChange={(e) => setFinanceCalc({...financeCalc, fahrerstunden:e.target.value})}/></label>
+                <label>Fahrerlohn €/Stunde<input type="number" min="0" step="0.5" value={financeCalc.fahrerlohn} onChange={(e) => setFinanceCalc({...financeCalc, fahrerlohn:e.target.value})}/></label>
+                <label>Sonstige Tourkosten €<input type="number" min="0" step="0.01" value={financeCalc.sonstigeKosten} onChange={(e) => setFinanceCalc({...financeCalc, sonstigeKosten:e.target.value})}/></label>
+              </div>
+              <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(170px,1fr))",gap:"10px",marginTop:"15px"}}>
+                <div className="card"><strong>Kraftstoff</strong><div style={{fontSize:"22px",fontWeight:800}}>{euro(calcFuelCost)}</div></div>
+                <div className="card"><strong>Fahrerlohn</strong><div style={{fontSize:"22px",fontWeight:800}}>{euro(calcDriverCost)}</div></div>
+                <div className="card"><strong>Gesamtkosten</strong><div style={{fontSize:"22px",fontWeight:800}}>{euro(calcTotalCost)}</div></div>
+                <div className="card" style={{background:calcMargin >= 0 ? "#ecfdf5" : "#fff1f2"}}><strong>Deckungsbeitrag</strong><div style={{fontSize:"22px",fontWeight:800}}>{euro(calcMargin)}</div></div>
+              </div>
+            </div>
+            <div className="card">
+              <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",gap:"10px",flexWrap:"wrap"}}><h3 style={{margin:0}}>📒 Buchungen im Monat</h3><div style={{display:"flex",gap:"8px"}}><button type="button" className="secondary-button" onClick={() => void loadFinanceRows()} disabled={financeLoading}>↻ Aktualisieren</button><button type="button" className="secondary-button" onClick={() => setFinanceShowAll(!financeShowAll)}>{financeShowAll ? "Nur Übersicht" : "Alle Details"}</button></div></div>
+              {financeLoading ? <p>Finanzdaten werden geladen…</p> : financeRows.length === 0 ? <p>Noch keine Buchungen für diesen Monat.</p> : <div style={{marginTop:"10px"}}>{financeRows.slice(0, financeShowAll ? 200 : 8).map((entry) => <div key={entry.id} style={{display:"flex",justifyContent:"space-between",alignItems:"center",gap:"10px",flexWrap:"wrap",borderTop:"1px solid #e2e8f0",padding:"12px 0"}}><div><strong>{entry.typ === "Einnahme" ? "📈" : "📉"} {entry.kategorie}</strong><div style={{fontSize:"13px",color:"#64748b"}}>{entry.datum} · {entry.beschreibung || "Keine Beschreibung"}{entry.tour_id ? ` · Tour ${entry.tour_id}` : ""}</div></div><div style={{display:"flex",alignItems:"center",gap:"10px"}}><strong style={{color:entry.typ === "Einnahme" ? "#15803d" : "#be123c"}}>{entry.typ === "Einnahme" ? "+" : "-"}{euro(Number(entry.betrag || 0))}</strong><button type="button" className="secondary-button" onClick={() => void deleteFinanceEntry(entry)} style={{color:"#b91c1c",borderColor:"#fecaca"}}>Löschen</button></div></div>)}</div>}
             </div>
           </section>
         )}
