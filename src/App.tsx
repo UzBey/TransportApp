@@ -753,6 +753,7 @@ type DispatcherDeliveryStats = {
 
 function App() {
   const [menuOpen, setMenuOpen] = useState(false)
+  const [profileMenuOpen, setProfileMenuOpen] = useState(false)
       const [expandedMenuSections, setExpandedMenuSections] = useState<Record<string, boolean>>({
         arbeitsalltag: true,
         verwaltung: false,
@@ -804,6 +805,8 @@ function App() {
   const [newAcquisitionFolderName, setNewAcquisitionFolderName] = useState("")
   const [editingAcquisitionFolder, setEditingAcquisitionFolder] = useState<string | null>(null)
   const [editingAcquisitionFolderName, setEditingAcquisitionFolderName] = useState("")
+  const [openAcquisitionFolderMenu, setOpenAcquisitionFolderMenu] = useState<string | null>(null)
+  const [acquisitionFoldersLoaded, setAcquisitionFoldersLoaded] = useState(false)
   const [openAcquisitionFolders, setOpenAcquisitionFolders] = useState<Record<string, boolean>>({})
   const [openAcquisitionCards, setOpenAcquisitionCards] = useState<Record<number, boolean>>({})
   const emptyAcquisitionForm = {
@@ -826,19 +829,22 @@ function App() {
       }
     } catch {
       // Falls lokale Speicherung nicht verfügbar ist, bleiben die Standardordner aktiv.
+    } finally {
+      setAcquisitionFoldersLoaded(true)
     }
   }, [])
 
   useEffect(() => {
+    if (!acquisitionFoldersLoaded) return
     try {
       window.localStorage.setItem("acquisition-folders", JSON.stringify(acquisitionFolders))
     } catch {
       // Die App bleibt auch ohne lokale Speicherung nutzbar.
     }
-  }, [acquisitionFolders])
+  }, [acquisitionFolders, acquisitionFoldersLoaded])
 
-  function addAcquisitionFolder() {
-    const name = newAcquisitionFolderName.trim()
+  function addAcquisitionFolder(nameOverride?: string) {
+    const name = (nameOverride ?? newAcquisitionFolderName).trim()
     if (!name) return
     if (acquisitionFolders.some((folder) => folder.toLowerCase() === name.toLowerCase())) {
       setAcquisitionMessage("Dieser Ordner existiert bereits.")
@@ -872,8 +878,10 @@ function App() {
       return
     }
     const fallback = acquisitionFolders.find((item) => item !== folder) || "Neue Akquise"
-    if (!window.confirm(`Ordner „${folder}“ löschen? Die enthaltenen Firmen werden nach „${fallback}“ verschoben.`)) return
+    if (!window.confirm(`Ordner „${folder}“ wirklich löschen? Die enthaltenen Firmen werden nach „${fallback}“ verschoben.`)) return
+    if (!window.confirm(`Letzte Sicherheitsabfrage: Ordner „${folder}“ endgültig löschen?`)) return
     setAcquisitionFolders((old) => old.filter((item) => item !== folder))
+    setOpenAcquisitionFolderMenu(null)
     setAcquisitionRows((old) => old.map((item) => item.status === folder ? { ...item, status: fallback } : item))
     void supabase.from("akquise_kontakte").update({ status: fallback }).eq("status", folder)
     setAcquisitionMessage(`Ordner „${folder}“ wurde gelöscht.`)
@@ -1010,6 +1018,14 @@ function App() {
   const [sopVersion, setSopVersion] = useState("1.0")
   const [sopDeadline, setSopDeadline] = useState("")
 
+  const [defectCounts, setDefectCounts] =
+    useState<DefectCounts>({
+      dringend: 0,
+      wichtig: 0,
+      normal: 0,
+      gesamt: 0,
+    })
+
   const normalizedRole = String(currentUser?.rolle || "").trim().toLowerCase()
   const isAdmin = normalizedRole === "admin" || normalizedRole === "administrator"
   const isDisponent = normalizedRole === "disponent" || normalizedRole === "dispatcher"
@@ -1034,6 +1050,9 @@ function App() {
         ? []
         : inboxMessages
   const unreadMessageCount = inboxMessages.filter((message) => !message.gelesen).length
+  const pendingSopCount = currentUser?.rolle === "Fahrer" ? pendingSops.length : 0
+  const operationalAlertCount = isAdmin || isDisponent ? defectCounts.gesamt : 0
+  const totalNotificationCount = unreadMessageCount + pendingSopCount + operationalAlertCount
 
 
   function hasPermission(permission: PermissionKey): boolean {
@@ -2293,6 +2312,7 @@ function App() {
   const [workNote, setWorkNote] = useState("")
   const [workDriverId, setWorkDriverId] = useState("")
   const [workDate, setWorkDate] = useState(getToday())
+  const [workEditId, setWorkEditId] = useState<number | null>(null)
 
   // =====================================================
   // FAHRER-SCHICHT / AUTOMATISCHE ARBEITSZEIT
@@ -4398,7 +4418,7 @@ function App() {
       .from("schichten")
       .select("id,fahrer_id,startzeit,endzeit,status,gesamt_km,notiz")
       .eq("fahrer_id", currentUser.id)
-      .eq("status", "Offen")
+      .in("status", ["Offen", "Pause"])
       .order("startzeit", { ascending: false })
       .limit(1)
 
@@ -4697,6 +4717,26 @@ function App() {
     setDriverShiftSaving(false)
   }
 
+  async function toggleDriverShiftPause() {
+    if (!driverShift || !currentUser?.id) return
+    const nextStatus = driverShift.status === "Pause" ? "Offen" : "Pause"
+    setDriverShiftSaving(true)
+    setDriverShiftMessage("")
+    const { error } = await supabase
+      .from("schichten")
+      .update({ status: nextStatus })
+      .eq("id", driverShift.id)
+      .eq("fahrer_id", currentUser.id)
+    if (error) {
+      setDriverShiftMessage("Pausenstatus konnte nicht geändert werden: " + error.message)
+      setDriverShiftSaving(false)
+      return
+    }
+    setDriverShift({ ...driverShift, status: nextStatus })
+    setDriverShiftMessage(nextStatus === "Pause" ? "Pause gestartet." : "Pause beendet.")
+    setDriverShiftSaving(false)
+  }
+
   async function endDriverShift() {
     if (!driverShift || !currentUser?.id) return
 
@@ -4806,17 +4846,21 @@ function App() {
       setWorkMessage("Bitte Fahrer, Datum und Arbeitsbeginn eingeben.")
       return
     }
-    const { error } = await supabase.from("fahrer_arbeitszeiten").insert({
+    const payload = {
       fahrer_id: workDriverId,
       datum: workDate,
       arbeitsbeginn: workStart,
       arbeitsende: workEnd || null,
       pause_minuten: Number(workBreak || 0),
       notiz: workNote || null,
-    })
+    }
+    const query = workEditId == null
+      ? supabase.from("fahrer_arbeitszeiten").insert(payload)
+      : supabase.from("fahrer_arbeitszeiten").update(payload).eq("id", workEditId)
+    const { error } = await query
     if (error) { setWorkMessage(error.message); return }
-    setWorkMessage("Arbeitszeit gespeichert.")
-    setWorkStart(""); setWorkEnd(""); setWorkNote("")
+    setWorkMessage(workEditId == null ? "Arbeitszeit gespeichert." : "Arbeitszeit aktualisiert.")
+    setWorkStart(""); setWorkEnd(""); setWorkNote(""); setWorkBreak("30"); setWorkEditId(null)
     await loadWorkEntries()
   }
 
@@ -7360,13 +7404,6 @@ function App() {
   // MANGEL-ZÄHLER
   // =====================================================
 
-  const [defectCounts, setDefectCounts] =
-    useState<DefectCounts>({
-      dringend: 0,
-      wichtig: 0,
-      normal: 0,
-      gesamt: 0,
-    })
 
     // =====================================================
   // MANGEL-POPUP
@@ -8291,6 +8328,15 @@ function App() {
 
     setSopConfirmingId(null)
   }
+
+  useEffect(() => {
+    if (currentUser?.rolle === "Fahrer" && currentUser.freigabestatus === "Freigegeben" && currentUser.aktiv) {
+      void loadSops()
+    }
+    if (isAdmin || isDisponent) {
+      void loadDefectCounts()
+    }
+  }, [currentUser?.id, currentUser?.rolle, currentUser?.freigabestatus, currentUser?.aktiv, isAdmin, isDisponent])
 
   // =====================================================
   // NAVIGATION
@@ -9299,10 +9345,6 @@ function App() {
             <p>Effizient. Sicher. Unterwegs.</p>
           </div>
         </div>
-        <div className="header-search">
-          <span aria-hidden="true">⌕</span>
-          <input type="search" placeholder="Suchen..." aria-label="In der App suchen" />
-        </div>
         <div className="header-actions">
           <button
             type="button"
@@ -9312,20 +9354,35 @@ function App() {
             onClick={() => navigateTo("messages")}
           >
             <span aria-hidden="true">🔔</span>
-            {unreadMessageCount > 0 && (
-              <span className="header-notification-badge">{unreadMessageCount}</span>
+            {totalNotificationCount > 0 && (
+              <span className="header-notification-badge">{totalNotificationCount}</span>
             )}
           </button>
-          <div className="header-profile">
-            <span className="profile-avatar">
-              {(currentUser?.name || currentUser?.email || "U").slice(0, 2).toUpperCase()}
-            </span>
-            <div className="header-profile-text">
-              <strong>{currentUser?.name || currentUser?.email || "Benutzer"}</strong>
-              <small>{currentUser?.rolle || "Mitarbeiter"}</small>
-            </div>
+          <div className="header-profile-menu">
+            <button
+              type="button"
+              className="header-profile header-profile-trigger"
+              aria-expanded={profileMenuOpen}
+              aria-haspopup="menu"
+              onClick={() => setProfileMenuOpen((open) => !open)}
+            >
+              <span className="profile-avatar">
+                {(currentUser?.name || currentUser?.email || "U").slice(0, 2).toUpperCase()}
+              </span>
+              <span className="header-profile-text">
+                <strong>{currentUser?.name || currentUser?.email || "Benutzer"}</strong>
+                <small>{currentUser?.rolle || "Mitarbeiter"}</small>
+              </span>
+              <span className="header-chevron">⌄</span>
+            </button>
+            {profileMenuOpen && (
+              <div className="header-profile-dropdown" role="menu">
+                <button type="button" role="menuitem" onClick={() => { setProfileMenuOpen(false); void logoutUser(); }}>
+                  ↪️ Abmelden
+                </button>
+              </div>
+            )}
           </div>
-          <span className="header-chevron">⌄</span>
         </div>
       </header>
 
@@ -9620,15 +9677,6 @@ function App() {
 
 
 </div>
-
-        <button
-          type="button"
-          className="nav"
-          onClick={logoutUser}
-        >
-          <span style={{ marginRight: "8px" }}>↪️</span>Abmelden
-        </button>
-
 
 
       </nav>
@@ -10561,6 +10609,20 @@ function App() {
                         )
                       )}
 
+                      <div style={{ marginTop: "14px", padding: "14px", border: "1px solid #ddd", borderRadius: "10px" }}>
+                        <h3 style={{ marginTop: 0 }}>Pausensteuerung</h3>
+                        <p style={{ marginTop: 0 }}>
+                          Status: <strong>{driverShift.status === "Pause" ? "⏸️ Pause" : "🟢 Aktiv"}</strong>
+                        </p>
+                        <button
+                          type="button"
+                          className="secondary-button"
+                          onClick={toggleDriverShiftPause}
+                          disabled={driverShiftSaving}
+                        >
+                          {driverShift.status === "Pause" ? "▶️ Pause beenden" : "⏸️ Pause starten"}
+                        </button>
+                      </div>
                       <div style={{ marginTop: "14px", padding: "14px", border: "1px solid #ddd", borderRadius: "10px" }}>
                         <h3 style={{ marginTop: 0 }}>Schicht beenden</h3>
                         {currentUser.rolle === "Fahrer" && (
@@ -12179,28 +12241,7 @@ function App() {
                     <h3 style={{ margin: 0 }}>Meine Akquise-Ordner</h3>
                     <p style={{ margin: "4px 0 0", color: "#64748b", fontSize: "13px" }}>Eigene Ordner anlegen, umbenennen oder löschen.</p>
                   </div>
-                  <div style={{ display: "flex", gap: "8px", flexWrap: "wrap" }}>
-                    <input value={newAcquisitionFolderName} onChange={(e) => setNewAcquisitionFolderName(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") addAcquisitionFolder() }} placeholder="Neuer Ordnername" style={{ minWidth: "190px" }} />
-                    <button className="primary-button" onClick={addAcquisitionFolder}>＋ Ordner anlegen</button>
-                  </div>
-                </div>
-                <div style={{ display: "flex", flexWrap: "wrap", gap: "8px", marginTop: "14px" }}>
-                  {acquisitionFolders.map((folder) => (
-                    <div key={folder} style={{ display: "flex", alignItems: "center", gap: "6px", border: "1px solid #e2e8f0", borderRadius: "999px", padding: "5px 8px 5px 12px", background: "#f8fafc" }}>
-                      {editingAcquisitionFolder === folder ? (
-                        <>
-                          <input value={editingAcquisitionFolderName} autoFocus onChange={(e) => setEditingAcquisitionFolderName(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") renameAcquisitionFolder(folder); if (e.key === "Escape") setEditingAcquisitionFolder(null) }} style={{ width: "150px", padding: "4px 7px" }} />
-                          <button className="secondary-button" onClick={() => renameAcquisitionFolder(folder)}>Speichern</button>
-                        </>
-                      ) : (
-                        <>
-                          <span style={{ fontSize: "13px", fontWeight: 700 }}>{folder}</span>
-                          <button className="secondary-button" title="Ordner umbenennen" onClick={() => { setEditingAcquisitionFolder(folder); setEditingAcquisitionFolderName(folder) }}>✎</button>
-                          <button className="secondary-button" title="Ordner löschen" onClick={() => deleteAcquisitionFolder(folder)}>×</button>
-                        </>
-                      )}
-                    </div>
-                  ))}
+                  <button className="primary-button" onClick={() => addAcquisitionFolder(window.prompt("Wie soll der neue Ordner heißen?") || "")}>＋ Ordner anlegen</button>
                 </div>
               </div>
 
@@ -12223,14 +12264,36 @@ function App() {
                       onDragOver={(event) => handleAcquisitionDragOver(event, folder)}
                       onDrop={(event) => moveAcquisitionToFolder(event, folder)}
                     >
-                      <button type="button" className="acquisition-column-header" onClick={() => setOpenAcquisitionFolders((old) => ({ ...old, [folder]: !isOpen }))} aria-expanded={isOpen}>
-                        <div>
-                          <span className="acquisition-folder-chevron">{isOpen ? "▾" : "▸"}</span>
-                          <strong>{folder}</strong>
-                          <span>{folderRows.length}</span>
-                        </div>
-                        <small>{acquisitionDropTarget === folder ? "Hier ablegen" : isOpen ? "Zuklappen" : "Öffnen"}</small>
-                      </button>
+                      <div className="acquisition-column-header" style={{ position: "relative" }}>
+                        <button type="button" className="acquisition-column-header-toggle" onClick={() => setOpenAcquisitionFolders((old) => ({ ...old, [folder]: !isOpen }))} aria-expanded={isOpen}>
+                          <div>
+                            <span className="acquisition-folder-chevron">{isOpen ? "▾" : "▸"}</span>
+                            <strong>{folder}</strong>
+                            <span>{folderRows.length}</span>
+                          </div>
+                          <small>{acquisitionDropTarget === folder ? "Hier ablegen" : isOpen ? "Zuklappen" : "Öffnen"}</small>
+                        </button>
+                        {folder !== "Nicht zugeordnet" && (
+                          <div style={{ position: "relative" }}>
+                            <button type="button" className="folder-menu-button" title={`Menü für ${folder}`} aria-label={`Menü für ${folder}`} onClick={() => setOpenAcquisitionFolderMenu((old) => old === folder ? null : folder)}>⋯</button>
+                            {openAcquisitionFolderMenu === folder && (
+                              <div className="folder-menu-popover" style={{ position: "absolute", right: 0, top: "calc(100% + 6px)", zIndex: 30, minWidth: "170px", padding: "6px", borderRadius: "12px", background: "#fff", border: "1px solid #dbe4f0", boxShadow: "0 16px 35px rgba(15,23,42,0.16)" }}>
+                                {editingAcquisitionFolder === folder ? (
+                                  <div style={{ display: "grid", gap: "6px" }}>
+                                    <input value={editingAcquisitionFolderName} autoFocus onChange={(e) => setEditingAcquisitionFolderName(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") renameAcquisitionFolder(folder); if (e.key === "Escape") { setEditingAcquisitionFolder(null); setOpenAcquisitionFolderMenu(null) } }} style={{ width: "100%", padding: "6px 8px" }} />
+                                    <button className="primary-button" onClick={() => { renameAcquisitionFolder(folder); setOpenAcquisitionFolderMenu(null) }}>Speichern</button>
+                                  </div>
+                                ) : (
+                                  <div style={{ display: "grid", gap: "4px" }}>
+                                    <button className="folder-menu-item" onClick={() => { setEditingAcquisitionFolder(folder); setEditingAcquisitionFolderName(folder) }}>✎ Bearbeiten</button>
+                                    <button className="folder-menu-item danger" onClick={() => deleteAcquisitionFolder(folder)}>🗑 Löschen</button>
+                                  </div>
+                                )}
+                              </div>
+                            )}
+                          </div>
+                        )}
+                      </div>
 
                       {isOpen && <div className="acquisition-column-body">
                         {folderRows.length === 0 ? (
@@ -12259,8 +12322,8 @@ function App() {
                                 <button
                                   type="button"
                                   className="acquisition-card-toggle"
-                                  onClick={() => setOpenAcquisitionCards((old) => ({ ...old, [row.id]: !(old[row.id] ?? false) }))}
-                                  aria-expanded={openAcquisitionCards[row.id] ?? false}
+                                  onClick={() => { setAcquisitionDetailId(row.id); setOpenAcquisitionCards((old) => ({ ...old, [row.id]: !(old[row.id] ?? false) })) }}
+                                  aria-label={`${row.firma} bearbeiten`}
                                   style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "space-between", gap: "10px", textAlign: "left", background: "transparent", border: 0, padding: 0, cursor: "pointer" }}
                                 >
                                   <div style={{ minWidth: 0 }}>
@@ -12301,7 +12364,6 @@ function App() {
 
                                   <div style={{ display: "flex", gap: "7px", flexWrap: "wrap", marginTop: "auto" }}>
                                     <button className="primary-button" onClick={() => setAcquisitionDetailId(row.id)}>Details öffnen</button>
-                                    <button className="secondary-button" onClick={() => editAcquisition(row)}>Bearbeiten</button>
                                   </div>
                                 </div>
                               )}
@@ -13734,10 +13796,11 @@ function App() {
                 <label>Pause (Minuten)<input type="number" min="0" value={workBreak} onChange={e=>setWorkBreak(e.target.value)}/></label>
                 <label>Notiz<input value={workNote} onChange={e=>setWorkNote(e.target.value)}/></label>
               </div>
-              <button type="button" className="primary-button" style={{marginTop:"12px"}} onClick={saveWorkEntry}>Arbeitszeit speichern</button>
+              <button type="button" className="primary-button" style={{marginTop:"12px"}} onClick={saveWorkEntry}>{workEditId == null ? "Arbeitszeit speichern" : "Änderung speichern"}</button>
+              {workEditId != null && <button type="button" className="secondary-button" style={{marginTop:"12px",marginLeft:"8px"}} onClick={() => { setWorkEditId(null); setWorkStart(""); setWorkEnd(""); setWorkNote(""); setWorkBreak("30"); }}>Bearbeitung abbrechen</button>}
             </div>
             <div className="card"><div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}><h3>Arbeitszeit-Historie</h3><button type="button" className="secondary-button" onClick={loadWorkEntries}>↻ Aktualisieren</button></div>
-              {workLoading?<p>Arbeitszeiten werden geladen…</p>:workEntries.map(entry=>{const driver=driverProfiles.find(d=>d.id===entry.fahrer_id);return <div key={entry.id} style={{borderTop:"1px solid #ddd",padding:"10px 0"}}><strong>{driver?.name||driver?.email||entry.fahrer_id}</strong><div>{entry.datum} · {entry.arbeitsbeginn}–{entry.arbeitsende||"offen"} · Pause {entry.pause_minuten} min · <strong>{formatMinutes(workMinutes(entry))}</strong></div>{entry.notiz&&<div>{entry.notiz}</div>}</div>})}
+              {workLoading?<p>Arbeitszeiten werden geladen…</p>:workEntries.map(entry=>{const driver=driverProfiles.find(d=>d.id===entry.fahrer_id);return <div key={entry.id} style={{borderTop:"1px solid #ddd",padding:"10px 0"}}><strong>{driver?.name||driver?.email||entry.fahrer_id}</strong><div>{entry.datum} · {entry.arbeitsbeginn}–{entry.arbeitsende||"offen"} · Pause {entry.pause_minuten} min · <strong>{formatMinutes(workMinutes(entry))}</strong></div>{entry.notiz&&<div>{entry.notiz}</div>}<button type="button" className="secondary-button" style={{marginTop:"8px"}} onClick={() => { setWorkEditId(entry.id); setWorkDriverId(entry.fahrer_id); setWorkDate(entry.datum); setWorkStart(entry.arbeitsbeginn); setWorkEnd(entry.arbeitsende || ""); setWorkBreak(String(entry.pause_minuten || 0)); setWorkNote(entry.notiz || ""); }}>Arbeitszeit / Pause bearbeiten</button></div>})}
               {workEntries.length===0&&!workLoading&&<p>Noch keine Arbeitszeiten erfasst.</p>}
             </div>
             <div className="card"><h3>Tour-Kilometer Übersicht</h3><p>Start- und Endkilometer je Tour.</p>{tours.filter((t:any)=>t.km_start!=null||t.km_ende!=null).map((t:any)=>{const km=t.km_start!=null&&t.km_ende!=null&&t.km_ende>=t.km_start?t.km_ende-t.km_start:null;return <div key={t.id} style={{borderTop:"1px solid #ddd",padding:"9px 0"}}><strong>{t.tournummer}</strong> · {formatTourDate(t.datum)} · {t.fahrer||"kein Fahrer"} · Start {t.km_start??"—"} · Ende {t.km_ende??"—"} · <strong>{km!=null?`${km} km`:"unvollständig"}</strong></div>})}</div>
@@ -14874,6 +14937,12 @@ function App() {
             </div>
 
             {sopError && <div className="card"><p className="warning">{sopError}</p></div>}
+            {pendingSopCount > 0 && (
+              <div className="card" style={{ border: "1px solid #f59e0b", background: "linear-gradient(135deg, #fffbeb, #fff7ed)", marginTop: "12px" }}>
+                <strong style={{ color: "#92400e" }}>🔔 {pendingSopCount} offene SOP{pendingSopCount === 1 ? "" : "s"}</strong>
+                <p style={{ margin: "6px 0 0", color: "#92400e" }}>Bitte lies und bestätige die neuen oder aktualisierten Arbeitsanweisungen. Sie bleiben offen, bis du sie bestätigt hast.</p>
+              </div>
+            )}
 
             {canManageSops && sopFormOpen && (
               <div className="card">

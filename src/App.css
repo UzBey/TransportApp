@@ -4013,3 +4013,142 @@ body {
     flex: 1;
   }
 }
+
+/* Akquise: kompakte Ordner-Menüs */
+.folder-menu-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  border: 1px solid #dbe4f0;
+  border-radius: 9px;
+  background: #ffffff;
+  color: #334155;
+  font-weight: 900;
+  cursor: pointer;
+}
+.folder-menu-button:hover {
+  background: #eff6ff;
+  border-color: #93c5fd;
+}
+.folder-menu-item {
+  width: 100%;
+  border: 0;
+  border-radius: 8px;
+  padding: 9px 10px;
+  background: transparent;
+  text-align: left;
+  font-weight: 700;
+  cursor: pointer;
+  color: #1e293b;
+}
+.folder-menu-item:hover {
+  background: #eff6ff;
+}
+.folder-menu-item.danger {
+  color: #b91c1c;
+}
+.folder-menu-item.danger:hover {
+  background: #fef2f2;
+}
+
+
+/* Akquise: Ordner-Menü direkt am jeweiligen Ordnerkopf */
+.acquisition-column-header-toggle {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  text-align: left;
+  cursor: pointer;
+}
+.acquisition-column-header-toggle > div {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.acquisition-column-header-toggle small {
+  flex-shrink: 0;
+  color: #64748b;
+}
+
+/* Kopfprofil-Menü */
+.header-profile-menu {
+  position: relative;
+}
+.header-profile-trigger {
+  border: 0;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  padding: 4px 6px;
+  border-radius: 12px;
+}
+.header-profile-trigger:hover,
+.header-profile-trigger:focus-visible {
+  background: rgba(255,255,255,.55);
+  outline: none;
+}
+.header-profile-dropdown {
+  position: absolute;
+  top: calc(100% + 10px);
+  right: 0;
+  z-index: 1200;
+  min-width: 170px;
+  padding: 6px;
+  border: 1px solid #d5e2f0;
+  border-radius: 12px;
+  background: #fff;
+  box-shadow: 0 12px 30px rgba(29,57,88,.18);
+}
+.header-profile-dropdown button {
+  width: 100%;
+  border: 0;
+  border-radius: 8px;
+  padding: 10px 12px;
+  text-align: left;
+  background: transparent;
+  color: #243b53;
+  font-weight: 750;
+  cursor: pointer;
+}
+.header-profile-dropdown button:hover,
+.header-profile-dropdown button:focus-visible {
+  background: #edf4ff;
+  outline: none;
+}
+
+
+/* Fix: Profilmenü darf unterhalb des Headers vollständig sichtbar und anklickbar sein */
+.header {
+  overflow: visible !important;
+  position: relative;
+  z-index: 1300;
+}
+
+.header-actions,
+.header-profile-menu {
+  position: relative;
+  z-index: 1310;
+}
+
+.header-profile-dropdown {
+  top: calc(100% + 8px) !important;
+  right: 0;
+  z-index: 1400 !important;
+  pointer-events: auto !important;
+}
+
+.header-profile-dropdown button {
+  position: relative;
+  z-index: 1401;
+  pointer-events: auto !important;
+}
