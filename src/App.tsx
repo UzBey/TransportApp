@@ -2,6 +2,7 @@ import {
   useEffect,
   useState,
   type ChangeEvent,
+  type DragEvent,
 } from "react"
 import "./App.css"
 import { supabase } from "./supabase"
@@ -311,6 +312,49 @@ type AcquisitionContact = {
   created_at: string
 }
 
+const ACQUISITION_FOLDERS = [
+  "Neue Akquise",
+  "Im August nochmal kontaktieren",
+  "Erledigt",
+  "Nicht qualifiziert",
+  "Will nicht kontaktiert werden",
+  "Kunde gewonnen",
+] as const
+
+type AcquisitionFolder = string
+
+function normalizeCompanyName(value: string | null | undefined): string {
+  return String(value || "")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .replace(/&/g, " und ")
+    .replace(/[^a-z0-9]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+}
+
+function normalizeWebsiteDomain(value: string | null | undefined): string {
+  const raw = String(value || "").trim()
+  if (!raw) return ""
+  try {
+    const url = new URL(raw.match(/^https?:\/\//i) ? raw : `https://${raw}`)
+    return url.hostname.replace(/^www\./i, "").toLowerCase()
+  } catch {
+    return raw
+      .replace(/^https?:\/\//i, "")
+      .split("/")[0]
+      .replace(/^www\./i, "")
+      .toLowerCase()
+  }
+}
+
+function getAcquisitionFolder(status: string | null | undefined): AcquisitionFolder {
+  const value = String(status || "").trim()
+  if (value === "Kein Bedarf") return "Nicht qualifiziert"
+  return value
+}
+
 const permissionOptions: { key: PermissionKey; label: string }[] = [
   { key: "dashboard", label: "Dashboard" },
   { key: "touren", label: "Touren ansehen" },
@@ -373,6 +417,25 @@ type FinanceEntry = {
   bezahlt: boolean
   tour_id: number | null
   erstellt_am?: string | null
+}
+
+
+type PlannedCost = {
+  id: string
+  name: string
+  category: string
+  amount: number
+  day: number
+  startMonth: string
+  active: boolean
+}
+
+type FinanceGoal = {
+  id: string
+  month: string
+  revenue: number
+  profit: number
+  acquisitions: number
 }
 
 type DocumentRecord = {
@@ -735,13 +798,86 @@ function App() {
   const [acquisitionSearch, setAcquisitionSearch] = useState("")
   const [acquisitionFormOpen, setAcquisitionFormOpen] = useState(false)
   const [acquisitionEditingId, setAcquisitionEditingId] = useState<number | null>(null)
+  const [acquisitionDraggingId, setAcquisitionDraggingId] = useState<number | null>(null)
+  const [acquisitionDropTarget, setAcquisitionDropTarget] = useState<AcquisitionFolder | null>(null)
+  const [acquisitionFolders, setAcquisitionFolders] = useState<string[]>([...ACQUISITION_FOLDERS])
+  const [newAcquisitionFolderName, setNewAcquisitionFolderName] = useState("")
+  const [editingAcquisitionFolder, setEditingAcquisitionFolder] = useState<string | null>(null)
+  const [editingAcquisitionFolderName, setEditingAcquisitionFolderName] = useState("")
+  const [openAcquisitionFolders, setOpenAcquisitionFolders] = useState<Record<string, boolean>>({})
+  const [openAcquisitionCards, setOpenAcquisitionCards] = useState<Record<number, boolean>>({})
   const emptyAcquisitionForm = {
     firma: "", branche: "", ort: "", website: "",
     ansprechpartner_name: "", ansprechpartner_position: "",
     telefon_zentrale: "", telefon_direkt: "", email: "",
-    status: "Potenzial", notes: "", next_action: "Ansprechpartner recherchieren",
+    status: "Neue Akquise" as AcquisitionFolder, notes: "", next_action: "Ansprechpartner recherchieren",
   }
   const [acquisitionForm, setAcquisitionForm] = useState(emptyAcquisitionForm)
+
+  useEffect(() => {
+    try {
+      const saved = window.localStorage.getItem("acquisition-folders")
+      if (saved) {
+        const parsed = JSON.parse(saved)
+        if (Array.isArray(parsed)) {
+          const folders = parsed.map((value) => String(value).trim()).filter(Boolean)
+          if (folders.length) setAcquisitionFolders(Array.from(new Set(folders)))
+        }
+      }
+    } catch {
+      // Falls lokale Speicherung nicht verfügbar ist, bleiben die Standardordner aktiv.
+    }
+  }, [])
+
+  useEffect(() => {
+    try {
+      window.localStorage.setItem("acquisition-folders", JSON.stringify(acquisitionFolders))
+    } catch {
+      // Die App bleibt auch ohne lokale Speicherung nutzbar.
+    }
+  }, [acquisitionFolders])
+
+  function addAcquisitionFolder() {
+    const name = newAcquisitionFolderName.trim()
+    if (!name) return
+    if (acquisitionFolders.some((folder) => folder.toLowerCase() === name.toLowerCase())) {
+      setAcquisitionMessage("Dieser Ordner existiert bereits.")
+      return
+    }
+    setAcquisitionFolders((old) => [...old, name])
+    setNewAcquisitionFolderName("")
+    setAcquisitionMessage(`Ordner „${name}“ wurde angelegt.`)
+  }
+
+  function renameAcquisitionFolder(folder: string) {
+    const name = editingAcquisitionFolderName.trim()
+    if (!name || name === folder) {
+      setEditingAcquisitionFolder(null)
+      return
+    }
+    if (acquisitionFolders.some((item) => item !== folder && item.toLowerCase() === name.toLowerCase())) {
+      setAcquisitionMessage("Dieser Ordnername wird bereits verwendet.")
+      return
+    }
+    setAcquisitionFolders((old) => old.map((item) => item === folder ? name : item))
+    setAcquisitionRows((old) => old.map((item) => item.status === folder ? { ...item, status: name } : item))
+    void supabase.from("akquise_kontakte").update({ status: name }).eq("status", folder)
+    setEditingAcquisitionFolder(null)
+    setAcquisitionMessage(`Ordner wurde in „${name}“ umbenannt.`)
+  }
+
+  function deleteAcquisitionFolder(folder: string) {
+    if (acquisitionFolders.length <= 1) {
+      setAcquisitionMessage("Mindestens ein Ordner muss erhalten bleiben.")
+      return
+    }
+    const fallback = acquisitionFolders.find((item) => item !== folder) || "Neue Akquise"
+    if (!window.confirm(`Ordner „${folder}“ löschen? Die enthaltenen Firmen werden nach „${fallback}“ verschoben.`)) return
+    setAcquisitionFolders((old) => old.filter((item) => item !== folder))
+    setAcquisitionRows((old) => old.map((item) => item.status === folder ? { ...item, status: fallback } : item))
+    void supabase.from("akquise_kontakte").update({ status: fallback }).eq("status", folder)
+    setAcquisitionMessage(`Ordner „${folder}“ wurde gelöscht.`)
+  }
   const [acquisitionDetailId, setAcquisitionDetailId] = useState<number | null>(null)
   const [acquisitionHistoryRows, setAcquisitionHistoryRows] = useState<AcquisitionContactHistory[]>([])
   const [acquisitionHistoryLoading, setAcquisitionHistoryLoading] = useState(false)
@@ -780,16 +916,33 @@ function App() {
       return
     }
     setCleaningLoading(true)
+
+    // Die Benutzer-ID wird direkt aus der aktuellen Supabase-Session
+    // gelesen. Dadurch wird nicht versehentlich null aus einem noch
+    // nicht aktualisierten React-State in die RLS-Prüfung geschickt.
+    const { data: authData, error: authError } = await supabase.auth.getUser()
+    const authenticatedUserId = authData.user?.id
+
+    if (authError || !authenticatedUserId) {
+      setCleaningMessage("Speichern fehlgeschlagen: Bitte erneut anmelden.")
+      setCleaningLoading(false)
+      return
+    }
+
     const { error } = await supabase.from("fahrzeug_reinigungen").insert({
       fahrzeug_id: Number(cleaningVehicleId),
-      user_id: session?.user?.id || null,
+      user_id: authenticatedUserId,
       reinigungsart: cleaningType,
       datum: cleaningDate,
       status: cleaningStatus,
       bemerkung: cleaningNote.trim() || null,
     })
+
     if (error) {
-      setCleaningMessage(`Speichern fehlgeschlagen: ${error.message}`)
+      const message = error.code === "42501"
+        ? "Speichern fehlgeschlagen: Dein Benutzer hat keine Berechtigung für diese Reinigung."
+        : `Speichern fehlgeschlagen: ${error.message}`
+      setCleaningMessage(message)
     } else {
       setCleaningMessage("Fahrzeugreinigung wurde gespeichert.")
       setCleaningNote("")
@@ -2258,6 +2411,14 @@ function App() {
     fahrerstunden: "", fahrerlohn: "18", sonstigeKosten: "",
   })
   const [financeShowAll, setFinanceShowAll] = useState(false)
+  const [plannedCosts, setPlannedCosts] = useState<PlannedCost[]>(() => {
+    try { return JSON.parse(window.localStorage.getItem("transportapp_planned_costs") || "[]") as PlannedCost[] } catch { return [] }
+  })
+  const [financeGoals, setFinanceGoals] = useState<FinanceGoal[]>(() => {
+    try { return JSON.parse(window.localStorage.getItem("transportapp_finance_goals") || "[]") as FinanceGoal[] } catch { return [] }
+  })
+  const [plannedCostForm, setPlannedCostForm] = useState({ name: "", category: "Versicherung", amount: "", day: "10", startMonth: getToday().slice(0, 7) })
+  const [goalForm, setGoalForm] = useState({ revenue: "", profit: "", acquisitions: "" })
   const [editingShiftId, setEditingShiftId] = useState<number | null>(null)
   const [editingShiftStart, setEditingShiftStart] = useState("")
   const [editingShiftEnd, setEditingShiftEnd] = useState("")
@@ -4814,6 +4975,47 @@ function App() {
     setReportLoading(false)
   }
 
+  useEffect(() => {
+    window.localStorage.setItem("transportapp_planned_costs", JSON.stringify(plannedCosts))
+  }, [plannedCosts])
+
+  useEffect(() => {
+    window.localStorage.setItem("transportapp_finance_goals", JSON.stringify(financeGoals))
+  }, [financeGoals])
+
+  function plannedCostsForMonth(month: string): FinanceEntry[] {
+    return plannedCosts.filter((cost) => cost.active && cost.startMonth <= month).map((cost) => ({
+      id: -Math.abs(cost.id.split("").reduce((sum, char) => sum + char.charCodeAt(0), 0)),
+      datum: `${month}-${String(Math.min(28, Math.max(1, cost.day))).padStart(2, "0")}`,
+      typ: "Ausgabe", kategorie: cost.category,
+      beschreibung: `${cost.name} · automatisch geplant`, betrag: cost.amount,
+      bezahlt: false, tour_id: null,
+    }))
+  }
+
+  const activeGoal = financeGoals.find((goal) => goal.month === financeMonth)
+  const plannedMonthCosts = plannedCostsForMonth(financeMonth)
+
+  async function savePlannedCost() {
+    const amount = Number(plannedCostForm.amount.replace(",", "."))
+    const day = Number(plannedCostForm.day)
+    if (!plannedCostForm.name.trim() || !Number.isFinite(amount) || amount <= 0 || day < 1 || day > 28) {
+      setFinanceMessage("Bitte Name, gültigen Betrag und einen Abbuchungstag zwischen 1 und 28 eingeben.")
+      return
+    }
+    setPlannedCosts((items) => [...items, { id: `${Date.now()}-${Math.random()}`, name: plannedCostForm.name.trim(), category: plannedCostForm.category.trim() || "Sonstige", amount: Math.round(amount * 100) / 100, day, startMonth: plannedCostForm.startMonth, active: true }])
+    setPlannedCostForm({ name: "", category: "Versicherung", amount: "", day: "10", startMonth: financeMonth })
+    setFinanceMessage("Geplante Kosten wurden gespeichert und werden monatlich berücksichtigt.")
+  }
+
+  function saveFinanceGoal() {
+    const revenue = Number(goalForm.revenue.replace(",", ".")) || 0
+    const profit = Number(goalForm.profit.replace(",", ".")) || 0
+    const acquisitions = Number(goalForm.acquisitions) || 0
+    setFinanceGoals((items) => [...items.filter((goal) => goal.month !== financeMonth), { id: `${financeMonth}-${Date.now()}`, month: financeMonth, revenue, profit, acquisitions }])
+    setFinanceMessage(`Ziele für ${financeMonth} wurden gespeichert.`)
+  }
+
   async function loadFinanceRows() {
     setFinanceLoading(true)
     setFinanceMessage("")
@@ -4866,8 +5068,9 @@ function App() {
     return `${value.toLocaleString("de-DE", { minimumFractionDigits: 2, maximumFractionDigits: 2 })} €`
   }
 
-  const financeIncome = financeRows.filter((row) => row.typ === "Einnahme").reduce((sum, row) => sum + Number(row.betrag || 0), 0)
-  const financeExpenses = financeRows.filter((row) => row.typ === "Ausgabe").reduce((sum, row) => sum + Number(row.betrag || 0), 0)
+  const financeIncome = financeRows.filter((row) => row.typ === "Einnahme" && row.bezahlt).reduce((sum, row) => sum + Number(row.betrag || 0), 0)
+  const financePendingIncome = financeRows.filter((row) => row.typ === "Einnahme" && !row.bezahlt).reduce((sum, row) => sum + Number(row.betrag || 0), 0)
+  const financeExpenses = financeRows.filter((row) => row.typ === "Ausgabe").reduce((sum, row) => sum + Number(row.betrag || 0), 0) + plannedMonthCosts.reduce((sum, row) => sum + row.betrag, 0)
   const financeResult = financeIncome - financeExpenses
   const calcRevenue = Number(financeCalc.umsatz.replace(",", ".")) || 0
   const calcFuelCost = ((Number(financeCalc.kilometer.replace(",", ".")) || 0) / 100) * (Number(financeCalc.verbrauch.replace(",", ".")) || 0) * (Number(financeCalc.dieselpreis.replace(",", ".")) || 0)
@@ -5761,6 +5964,24 @@ function App() {
     }
 
     window.open(data.signedUrl, "_blank", "noopener,noreferrer")
+  }
+
+  async function downloadTourDocument(document: TourDocumentRecord) {
+    const { data, error } = await supabase.storage
+      .from("dokumente")
+      .createSignedUrl(document.speicherpfad, 300, { download: document.dateiname || true })
+
+    if (error || !data?.signedUrl) {
+      alert("Das Dokument konnte nicht heruntergeladen werden.\\n\\n" + (error?.message || "Unbekannter Fehler"))
+      return
+    }
+
+    const link = window.document.createElement("a")
+    link.href = data.signedUrl
+    link.download = document.dateiname || "Dokument"
+    link.target = "_blank"
+    link.rel = "noopener noreferrer"
+    link.click()
   }
 
   async function synchronizeTourCompletion(tourId: number) {
@@ -6692,6 +6913,22 @@ function App() {
     doc.save(`${invoiceNumber}.pdf`)
   }
 
+  async function syncTourInvoiceFinance(tourId: number, invoiceStatus: "Ausstehend" | "Gestellt" | "Bezahlt", tourDate: string, tourNumber: string) {
+    if (invoiceStatus === "Ausstehend") return
+    const { data: deliveryRows } = await supabase.from("lieferungen").select("kundenbetrag, zusatzkosten").eq("tour_id", tourId)
+    const total = (deliveryRows || []).reduce((sum: number, row: any) => {
+      const base = Number(row.kundenbetrag || 0)
+      let extra = 0
+      if (Array.isArray(row.zusatzkosten)) extra = row.zusatzkosten.reduce((s: number, item: any) => s + (Number(item.amount) || 0), 0)
+      return sum + base + extra
+    }, 0)
+    if (!Number.isFinite(total) || total <= 0) return
+    const { data: existing } = await supabase.from("finanzbuchungen").select("id").eq("tour_id", tourId).eq("kategorie", "Rechnungsumsatz").limit(1)
+    const payload = { datum: tourDate, typ: "Einnahme", kategorie: "Rechnungsumsatz", beschreibung: `Tour ${tourNumber} · Rechnung ${invoiceStatus.toLowerCase()}`, betrag: Math.round(total * 100) / 100, bezahlt: invoiceStatus === "Bezahlt", tour_id: tourId, erstellt_von: session?.user?.id || null }
+    if (existing && existing.length > 0) await supabase.from("finanzbuchungen").update(payload).eq("id", existing[0].id)
+    else await supabase.from("finanzbuchungen").insert(payload)
+  }
+
   async function saveTourChanges() {
     if (!tour) {
       return
@@ -6776,6 +7013,9 @@ function App() {
       })
       .eq("id", tour.id)
 
+    if (!error) {
+      await syncTourInvoiceFinance(tour.id, editingInvoiceStatus, editingTourDate, editingTourNumber.trim())
+    }
     setManagementSaving(false)
 
     if (error) {
@@ -7155,16 +7395,20 @@ function App() {
     setSelectedDefectPriority(priority)
     setDefectDetailsLoading(true)
 
-    const { data, error } = await supabase
+    let query = supabase
       .from("maengel")
       .select(
         "id, fahrzeug_id, kennzeichen, fahrer, datum, kategorie, beschreibung, prioritaet, status"
       )
       .eq("status", "Offen")
-      .eq("prioritaet", priority)
-      .order("datum", {
-        ascending: false,
-      })
+
+    if (priority !== "Alle") {
+      query = query.eq("prioritaet", priority)
+    }
+
+    const { data, error } = await query.order("datum", {
+      ascending: false,
+    })
 
     setDefectDetailsLoading(false)
 
@@ -8137,7 +8381,7 @@ function App() {
       website: row.website || "", ansprechpartner_name: row.ansprechpartner_name || "",
       ansprechpartner_position: row.ansprechpartner_position || "",
       telefon_zentrale: row.telefon_zentrale || "", telefon_direkt: row.telefon_direkt || "",
-      email: row.email || "", status: row.status || "Potenzial",
+      email: row.email || "", status: getAcquisitionFolder(row.status),
       notes: row.notes || "", next_action: row.next_action || "",
     })
     setAcquisitionFormOpen(true)
@@ -8145,23 +8389,99 @@ function App() {
   }
 
   async function saveAcquisition() {
-    if (!acquisitionForm.firma.trim()) {
+    const companyName = acquisitionForm.firma.trim()
+    if (!companyName) {
       setAcquisitionMessage("Bitte mindestens den Firmennamen eintragen.")
       return
     }
+
+    const normalizedName = normalizeCompanyName(companyName)
+    const normalizedDomain = normalizeWebsiteDomain(acquisitionForm.website)
+    const duplicate = acquisitionRows.find((row) => {
+      if (acquisitionEditingId && row.id === acquisitionEditingId) return false
+      const sameName = normalizeCompanyName(row.firma) === normalizedName
+      const rowDomain = normalizeWebsiteDomain(row.website)
+      const sameWebsite = Boolean(normalizedDomain && rowDomain && normalizedDomain === rowDomain)
+      return sameName || sameWebsite
+    })
+
+    if (duplicate) {
+      const reason = normalizeCompanyName(duplicate.firma) === normalizedName
+        ? "dem gleichen Firmennamen"
+        : "derselben Website"
+      setAcquisitionMessage(`Diese Firma ist bereits in der Akquise vorhanden (${reason}: „${duplicate.firma}“). Bitte den bestehenden Datensatz bearbeiten statt einen zweiten anzulegen.`)
+      return
+    }
+
     setAcquisitionLoading(true)
-    const payload = { ...acquisitionForm, firma: acquisitionForm.firma.trim(), created_by: session?.user?.id || null }
+    const payload = {
+      ...acquisitionForm,
+      firma: companyName,
+      status: getAcquisitionFolder(acquisitionForm.status),
+      created_by: session?.user?.id || null,
+    }
     const query = acquisitionEditingId
       ? supabase.from("akquise_kontakte").update(payload).eq("id", acquisitionEditingId)
       : supabase.from("akquise_kontakte").insert(payload)
     const { error } = await query
+
     if (error) {
-      setAcquisitionMessage("Speichern fehlgeschlagen: " + error.message)
+      if (error.code === "23505") {
+        setAcquisitionMessage("Diese Firma ist bereits vorhanden. Bitte bearbeite den bestehenden Akquise-Eintrag.")
+      } else {
+        setAcquisitionMessage("Speichern fehlgeschlagen: " + error.message)
+      }
     } else {
       setAcquisitionFormOpen(false)
       setAcquisitionEditingId(null)
       setAcquisitionForm(emptyAcquisitionForm)
       await loadAcquisitionRows()
+    }
+    setAcquisitionLoading(false)
+  }
+
+  function handleAcquisitionDragStart(event: DragEvent<HTMLDivElement>, rowId: number) {
+    setAcquisitionDraggingId(rowId)
+    event.dataTransfer.effectAllowed = "move"
+    event.dataTransfer.setData("text/plain", String(rowId))
+  }
+
+  function handleAcquisitionDragEnd() {
+    setAcquisitionDraggingId(null)
+    setAcquisitionDropTarget(null)
+  }
+
+  function handleAcquisitionDragOver(event: DragEvent<HTMLDivElement>, folder: AcquisitionFolder) {
+    event.preventDefault()
+    event.dataTransfer.dropEffect = "move"
+    if (acquisitionDropTarget !== folder) setAcquisitionDropTarget(folder)
+  }
+
+  async function moveAcquisitionToFolder(event: DragEvent<HTMLDivElement>, folder: AcquisitionFolder) {
+    event.preventDefault()
+    const rawId = event.dataTransfer.getData("text/plain")
+    const rowId = Number(rawId)
+    setAcquisitionDropTarget(null)
+    setAcquisitionDraggingId(null)
+
+    if (!Number.isFinite(rowId)) return
+    const row = acquisitionRows.find((item) => item.id === rowId)
+    if (!row) return
+    const targetStatus = folder === "Nicht zugeordnet" ? "" : folder
+    const currentStatus = getAcquisitionFolder(row.status)
+    if ((folder === "Nicht zugeordnet" && !row.status) || currentStatus === folder) return
+
+    setAcquisitionLoading(true)
+    const { error } = await supabase
+      .from("akquise_kontakte")
+      .update({ status: targetStatus })
+      .eq("id", rowId)
+
+    if (error) {
+      setAcquisitionMessage(`„${row.firma}“ konnte nicht verschoben werden: ${error.message}`)
+    } else {
+      setAcquisitionRows((old) => old.map((item) => item.id === rowId ? { ...item, status: targetStatus } : item))
+      setAcquisitionMessage(`„${row.firma}“ wurde in „${folder}“ verschoben.`)
     }
     setAcquisitionLoading(false)
   }
@@ -9748,6 +10068,14 @@ function App() {
                 }}
               >
                 <div
+                  className="dashboard-stat-tile"
+                  role="button"
+                  tabIndex={0}
+                  title="Tourenverwaltung öffnen"
+                  onClick={() => navigateTo("tour-management")}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter" || event.key === " ") navigateTo("tour-management")
+                  }}
                   style={{
                     padding: "16px",
                     border: "1px solid #ddd",
@@ -9774,6 +10102,14 @@ function App() {
                 </div>
 
                 <div
+                  className="dashboard-stat-tile"
+                  role="button"
+                  tabIndex={0}
+                  title="Tourenverwaltung öffnen"
+                  onClick={() => navigateTo("tour-management")}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter" || event.key === " ") navigateTo("tour-management")
+                  }}
                   style={{
                     padding: "16px",
                     border: "1px solid #ddd",
@@ -9800,6 +10136,14 @@ function App() {
                 </div>
 
                 <div
+                  className="dashboard-stat-tile"
+                  role="button"
+                  tabIndex={0}
+                  title="Tourenverwaltung öffnen"
+                  onClick={() => navigateTo("tour-management")}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter" || event.key === " ") navigateTo("tour-management")
+                  }}
                   style={{
                     padding: "16px",
                     border: "1px solid #ddd",
@@ -9826,6 +10170,14 @@ function App() {
                 </div>
 
                 <div
+                  className="dashboard-stat-tile"
+                  role="button"
+                  tabIndex={0}
+                  title="Offene Touren in der Tourenverwaltung öffnen"
+                  onClick={() => navigateTo("tour-management")}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter" || event.key === " ") navigateTo("tour-management")
+                  }}
                   style={{
                     padding: "16px",
                     border: "1px solid #ddd",
@@ -9852,6 +10204,14 @@ function App() {
                 </div>
 
                 <div
+                  className="dashboard-stat-tile"
+                  role="button"
+                  tabIndex={0}
+                  title="Verspätete Touren in der Tourenverwaltung öffnen"
+                  onClick={() => navigateTo("tour-management")}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter" || event.key === " ") navigateTo("tour-management")
+                  }}
                   style={{
                     padding: "16px",
                     border: "1px solid #ddd",
@@ -9878,6 +10238,14 @@ function App() {
                 </div>
 
                 <div
+                  className="dashboard-stat-tile"
+                  role="button"
+                  tabIndex={0}
+                  title="Offene Mängel anzeigen"
+                  onClick={() => openDefectDetails("Alle")}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter" || event.key === " ") openDefectDetails("Alle")
+                  }}
                   style={{
                     padding: "16px",
                     border: "1px solid #ddd",
@@ -10420,135 +10788,6 @@ function App() {
               </div>
             )}
 
-            <div className="dashboard-grid">
-
-              <div
-                className="dashboard-card"
-                onClick={() =>
-                  navigateTo("vehicle")
-                }
-              >
-                <div className="icon">
-                  🚚
-                </div>
-
-                <h3>
-                  Fahrzeugcheck
-                </h3>
-
-                <p>
-                  Fahrzeug vor Fahrtbeginn
-                  prüfen
-                </p>
-              </div>
-
-              <div
-                className="dashboard-card"
-                onClick={() =>
-                  navigateTo("tour")
-                }
-              >
-                <div className="icon">
-                  📦
-                </div>
-
-                <h3>
-                  Meine Tour
-                </h3>
-
-                <p>
-                  Lieferungen und Kunden
-                  anzeigen
-                </p>
-              </div>
-
-              {canManageTours && (
-                <div
-                  className="dashboard-card"
-                  onClick={() =>
-                    navigateTo(
-                      "tour-management"
-                    )
-                  }
-                >
-                  <div className="icon">
-                    🗂️
-                  </div>
-
-                  <h3>
-                    Touren verwalten
-                  </h3>
-
-                  <p>
-                    Touren erstellen und
-                    bearbeiten
-                  </p>
-                </div>
-              )}
-
-              {hasPermission("maengel") && (
-              <div
-                className="dashboard-card"
-                onClick={() =>
-                  navigateTo("defect")
-                }
-              >
-                <div className="icon">
-                  ⚠️
-                </div>
-
-                <h3>
-                  Mangel melden
-                </h3>
-
-                <p>
-                  Offene Fahrzeugmängel
-                  anzeigen
-                </p>
-
-                {defectCounts.gesamt >
-                  0 && (
-                  <div className="dashboard-defect-counts">
-
-                    {defectCounts.dringend >
-                      0 && (
-                      <span className="defect-badge urgent">
-                        🔴{" "}
-                        {
-                          defectCounts.dringend
-                        }
-                      </span>
-                    )}
-
-                    {defectCounts.wichtig >
-                      0 && (
-                      <span className="defect-badge important">
-                        🟠{" "}
-                        {
-                          defectCounts.wichtig
-                        }
-                      </span>
-                    )}
-
-                    {defectCounts.normal >
-                      0 && (
-                      <span className="defect-badge normal">
-                        🟢{" "}
-                        {
-                          defectCounts.normal
-                        }
-                      </span>
-                    )}
-
-                  </div>
-                )}
-
-              </div>
-              )}
-
-            </div>
-
-
             {canManageTours && (
               <div className="card dashboard-central-warnings" style={{marginTop:"16px"}}>
                 <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",gap:"12px",flexWrap:"wrap"}}>
@@ -10642,14 +10881,14 @@ function App() {
                     <div style={{ display: "flex", gap: 10, marginTop: 10, flexWrap: "wrap" }}>
                       <button
                         type="button"
-                        className={value === "ok" ? "primary-button" : "secondary-button"}
+                        className={`vehicle-check-choice ${value === "ok" ? "is-selected is-ok" : ""}`} 
                         onClick={() => setChecklistStatus(index, "ok")}
                       >
                         ✓ In Ordnung
                       </button>
                       <button
                         type="button"
-                        className="secondary-button"
+                        className={`vehicle-check-choice ${value === "bad" ? "is-selected is-bad" : ""}`}
                         onClick={() => setChecklistStatus(index, "bad")}
                       >
                         ✕ Nicht in Ordnung
@@ -10906,7 +11145,7 @@ function App() {
               </div>
             )}
 
-            {!tourLoading &&
+            {false && !tourLoading &&
               !tourError &&
               currentUser?.rolle === "Fahrer" &&
               deliveries.length > 0 && (
@@ -10966,14 +11205,15 @@ function App() {
               </div>
             )}
 
-            {!tourLoading &&
+            {false && !tourLoading &&
               !tourError &&
               currentUser?.rolle === "Fahrer" &&
               deliveries.length > 0 &&
               (() => {
                 const nextId = getNextDeliveryId(deliveries)
-                const nextDelivery = deliveries.find((item) => item.id === nextId)
-                if (!nextDelivery) return null
+                const foundDelivery = deliveries.find((item) => item.id === nextId)
+                if (foundDelivery === undefined) return null
+                const nextDelivery = foundDelivery as Delivery
                 const delay = getDeliveryDelayMinutes(nextDelivery, tour?.datum)
                 return (
                   <div
@@ -11758,6 +11998,42 @@ function App() {
               )
             )}
 
+
+
+            {tour && Object.values(deliveryDocuments).some((items) => items.length > 0) && (
+              <div className="card tour-document-archive" style={{ marginTop: "18px" }}>
+                <div className="tour-document-archive-header">
+                  <div>
+                    <h2 style={{ marginBottom: "4px" }}>Dokumentenarchiv der Tour</h2>
+                    <p style={{ margin: 0, color: "#64748b" }}>
+                      Alle hochgeladenen Frachtbriefe, Tankbelege und Schadensfotos an einem Ort.
+                    </p>
+                  </div>
+                </div>
+                <div className="tour-document-list">
+                  {Object.entries(deliveryDocuments).flatMap(([deliveryId, documents]) =>
+                    documents.map((document) => (
+                      <div className="tour-document-row" key={`archive-${document.id}`}>
+                        <div style={{ minWidth: 0 }}>
+                          <strong>{document.dokumenttyp}</strong>
+                          <div style={{ fontSize: "12px", color: "#64748b", overflowWrap: "anywhere" }}>
+                            {document.dateiname} · Lieferung {deliveryId}
+                          </div>
+                        </div>
+                        <div className="tour-document-actions">
+                          <button type="button" className="secondary-button" onClick={() => openTourDocument(document)}>
+                            Öffnen
+                          </button>
+                          <button type="button" className="primary-button" onClick={() => downloadTourDocument(document)}>
+                            Herunterladen
+                          </button>
+                        </div>
+                      </div>
+                    ))
+                  )}
+                </div>
+              </div>
+            )}
           </section>
         )}
 
@@ -11773,12 +12049,11 @@ function App() {
           )
           const selectedAcquisition = acquisitionRows.find((row) => row.id === acquisitionDetailId) || null
           const statusColors: Record<string, { background: string; color: string }> = {
-            "Potenzial": { background: "#eef2ff", color: "#4338ca" },
-            "Recherche läuft": { background: "#fff7ed", color: "#c2410c" },
-            "Kontakt geplant": { background: "#eff6ff", color: "#1d4ed8" },
-            "Kontaktiert": { background: "#f0fdf4", color: "#15803d" },
-            "Gespräch": { background: "#ecfdf5", color: "#047857" },
-            "Kein Bedarf": { background: "#f3f4f6", color: "#6b7280" },
+            "Neue Akquise": { background: "#eef2ff", color: "#4338ca" },
+            "Im August nochmal kontaktieren": { background: "#fff7ed", color: "#c2410c" },
+            "Erledigt": { background: "#f0fdf4", color: "#15803d" },
+            "Nicht qualifiziert": { background: "#f3f4f6", color: "#6b7280" },
+            "Will nicht kontaktiert werden": { background: "#fff1f2", color: "#be123c" },
             "Kunde gewonnen": { background: "#dcfce7", color: "#166534" },
           }
           const getCompletion = (row: AcquisitionContact) => {
@@ -11842,9 +12117,9 @@ function App() {
               <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))", gap: "12px", margin: "22px 0" }}>
                 {[
                   ["Alle Firmen", acquisitionRows.length, "#1e293b"],
-                  ["Recherche offen", acquisitionRows.filter((row) => acquisitionMissing(row).length > 0).length, "#c2410c"],
-                  ["Kontakt geplant", acquisitionRows.filter((row) => row.status === "Kontakt geplant").length, "#1d4ed8"],
-                  ["Gewonnen", acquisitionRows.filter((row) => row.status === "Kunde gewonnen").length, "#15803d"],
+                  ["Neue Akquise", acquisitionRows.filter((row) => getAcquisitionFolder(row.status) === "Neue Akquise").length, "#4338ca"],
+                  ["Nachfassen", acquisitionRows.filter((row) => getAcquisitionFolder(row.status) === "Im August nochmal kontaktieren").length, "#c2410c"],
+                  ["Gewonnen", acquisitionRows.filter((row) => getAcquisitionFolder(row.status) === "Kunde gewonnen").length, "#15803d"],
                 ].map(([label, value, color]) => (
                   <div key={String(label)} className="card" style={{ padding: "18px 20px", margin: 0 }}>
                     <div style={{ color: "#64748b", fontSize: "13px", fontWeight: 700 }}>{label}</div>
@@ -11879,9 +12154,9 @@ function App() {
                         <input value={acquisitionForm[key]} onChange={(e) => setAcquisitionForm((old) => ({ ...old, [key]: e.target.value }))} />
                       </label>
                     ))}
-                    <label>Status
-                      <select value={acquisitionForm.status} onChange={(e) => setAcquisitionForm((old) => ({ ...old, status: e.target.value }))}>
-                        <option>Potenzial</option><option>Recherche läuft</option><option>Kontakt geplant</option><option>Kontaktiert</option><option>Gespräch</option><option>Kein Bedarf</option><option>Kunde gewonnen</option>
+                    <label>Ordner
+                      <select value={getAcquisitionFolder(acquisitionForm.status)} onChange={(e) => setAcquisitionForm((old) => ({ ...old, status: e.target.value as AcquisitionFolder }))}>
+                        {acquisitionFolders.map((folder) => <option key={folder}>{folder}</option>)}
                       </select>
                     </label>
                     <label style={{ gridColumn: "1 / -1" }}>Notizen / Recherche
@@ -11898,35 +12173,143 @@ function App() {
               {acquisitionLoading && acquisitionRows.length === 0 ? <p>Akquise wird geladen...</p> : null}
               {!acquisitionLoading && filteredAcquisitions.length === 0 && <div className="card"><p>Noch keine passenden potenziellen Kunden erfasst.</p></div>}
 
-              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(300px, 1fr))", gap: "16px" }}>
-                {filteredAcquisitions.map((row) => {
-                  const missing = acquisitionMissing(row)
-                  const completion = getCompletion(row)
-                  const badge = statusColors[row.status] || statusColors.Potenzial
+              <div className="card" style={{ marginBottom: "18px", padding: "16px 18px" }}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: "12px", flexWrap: "wrap" }}>
+                  <div>
+                    <h3 style={{ margin: 0 }}>Meine Akquise-Ordner</h3>
+                    <p style={{ margin: "4px 0 0", color: "#64748b", fontSize: "13px" }}>Eigene Ordner anlegen, umbenennen oder löschen.</p>
+                  </div>
+                  <div style={{ display: "flex", gap: "8px", flexWrap: "wrap" }}>
+                    <input value={newAcquisitionFolderName} onChange={(e) => setNewAcquisitionFolderName(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") addAcquisitionFolder() }} placeholder="Neuer Ordnername" style={{ minWidth: "190px" }} />
+                    <button className="primary-button" onClick={addAcquisitionFolder}>＋ Ordner anlegen</button>
+                  </div>
+                </div>
+                <div style={{ display: "flex", flexWrap: "wrap", gap: "8px", marginTop: "14px" }}>
+                  {acquisitionFolders.map((folder) => (
+                    <div key={folder} style={{ display: "flex", alignItems: "center", gap: "6px", border: "1px solid #e2e8f0", borderRadius: "999px", padding: "5px 8px 5px 12px", background: "#f8fafc" }}>
+                      {editingAcquisitionFolder === folder ? (
+                        <>
+                          <input value={editingAcquisitionFolderName} autoFocus onChange={(e) => setEditingAcquisitionFolderName(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") renameAcquisitionFolder(folder); if (e.key === "Escape") setEditingAcquisitionFolder(null) }} style={{ width: "150px", padding: "4px 7px" }} />
+                          <button className="secondary-button" onClick={() => renameAcquisitionFolder(folder)}>Speichern</button>
+                        </>
+                      ) : (
+                        <>
+                          <span style={{ fontSize: "13px", fontWeight: 700 }}>{folder}</span>
+                          <button className="secondary-button" title="Ordner umbenennen" onClick={() => { setEditingAcquisitionFolder(folder); setEditingAcquisitionFolderName(folder) }}>✎</button>
+                          <button className="secondary-button" title="Ordner löschen" onClick={() => deleteAcquisitionFolder(folder)}>×</button>
+                        </>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              <div style={{ marginBottom: "12px", color: "#64748b", fontSize: "13px", fontWeight: 700 }}>
+                Ziehe eine Firmenkarte mit der Maus in den gewünschten Ordner. Der neue Ordner wird automatisch gespeichert.
+              </div>
+              <div className="acquisition-kanban">
+                {["Nicht zugeordnet", ...acquisitionFolders].map((folder) => {
+                  const folderRows = filteredAcquisitions.filter((row) => {
+                    const normalized = getAcquisitionFolder(row.status)
+                    return folder === "Nicht zugeordnet"
+                      ? (!normalized || !acquisitionFolders.includes(normalized))
+                      : normalized === folder
+                  })
+                  const isOpen = openAcquisitionFolders[folder] ?? false
                   return (
-                    <article className="card" key={row.id} style={{ margin: 0, padding: "20px", display: "flex", flexDirection: "column", gap: "14px", border: "1px solid #e2e8f0" }}>
-                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: "12px" }}>
+                    <div
+                      key={folder}
+                      className={`acquisition-column${acquisitionDropTarget === folder ? " is-drop-target" : ""}`}
+                      onDragOver={(event) => handleAcquisitionDragOver(event, folder)}
+                      onDrop={(event) => moveAcquisitionToFolder(event, folder)}
+                    >
+                      <button type="button" className="acquisition-column-header" onClick={() => setOpenAcquisitionFolders((old) => ({ ...old, [folder]: !isOpen }))} aria-expanded={isOpen}>
                         <div>
-                          <h3 style={{ margin: 0, fontSize: "20px" }}>{row.firma}</h3>
-                          <div style={{ color: "#64748b", marginTop: "5px", fontSize: "14px" }}>{[row.branche, row.ort].filter(Boolean).join(" · ") || "Branche und Ort ergänzen"}</div>
+                          <span className="acquisition-folder-chevron">{isOpen ? "▾" : "▸"}</span>
+                          <strong>{folder}</strong>
+                          <span>{folderRows.length}</span>
                         </div>
-                        <span style={{ background: badge.background, color: badge.color, padding: "6px 9px", borderRadius: "999px", fontSize: "12px", fontWeight: 800, whiteSpace: "nowrap" }}>{row.status}</span>
-                      </div>
-                      <div>
-                        <div style={{ display: "flex", justifyContent: "space-between", fontSize: "12px", fontWeight: 700, color: "#64748b", marginBottom: "6px" }}><span>Informationsstand</span><span>{completion}%</span></div>
-                        <div style={{ height: "8px", background: "#e2e8f0", borderRadius: "999px", overflow: "hidden" }}><div style={{ width: `${completion}%`, height: "100%", background: completion >= 80 ? "#16a34a" : completion >= 45 ? "#f59e0b" : "#64748b", borderRadius: "999px" }} /></div>
-                      </div>
-                      <div style={{ display: "grid", gap: "8px", fontSize: "14px" }}>
-                        <div><strong>Ansprechpartner:</strong> {row.ansprechpartner_name || "Noch nicht bekannt"}</div>
-                        <div><strong>Telefon:</strong> {row.telefon_direkt || row.telefon_zentrale || "Noch nicht vorhanden"}</div>
-                        <div><strong>Nächste Aktion:</strong> {row.next_action || "Noch festlegen"}</div>
-                      </div>
-                      <div style={{ background: missing.length ? "#fff7ed" : "#f0fdf4", color: missing.length ? "#9a3412" : "#166534", padding: "11px 12px", borderRadius: "10px", fontSize: "13px" }}><strong>{missing.length ? `${missing.length} Informationen fehlen` : "Wichtige Kontaktdaten vorhanden"}</strong><div style={{ marginTop: "4px" }}>{missing.length ? missing.join(" · ") : "Du kannst den Datensatz jetzt weiter qualifizieren."}</div></div>
-                      <div style={{ display: "flex", gap: "8px", flexWrap: "wrap", marginTop: "auto" }}>
-                        <button className="primary-button" onClick={() => setAcquisitionDetailId(row.id)}>Details öffnen</button>
-                        <button className="secondary-button" onClick={() => editAcquisition(row)}>Bearbeiten</button>
-                      </div>
-                    </article>
+                        <small>{acquisitionDropTarget === folder ? "Hier ablegen" : isOpen ? "Zuklappen" : "Öffnen"}</small>
+                      </button>
+
+                      {isOpen && <div className="acquisition-column-body">
+                        {folderRows.length === 0 ? (
+                          <div className="acquisition-empty-dropzone">
+                            <span>↘</span>
+                            <div>Diesen Ordner hier verwenden</div>
+                          </div>
+                        ) : folderRows.map((row) => {
+                          const missing = acquisitionMissing(row)
+                          const completion = getCompletion(row)
+                          const displayFolder = getAcquisitionFolder(row.status)
+                          const badge = statusColors[displayFolder] || statusColors["Neue Akquise"]
+                          const isDragging = acquisitionDraggingId === row.id
+                          return (
+                            <div
+                              className={`acquisition-card${isDragging ? " is-dragging" : ""}`}
+                              key={row.id}
+                              draggable
+                              onDragStart={(event) => handleAcquisitionDragStart(event, row.id)}
+                              onDragEnd={handleAcquisitionDragEnd}
+                            >
+                              <div className="acquisition-card-summary" style={{ display: "flex", alignItems: "center", gap: "10px" }}>
+                                <div className="acquisition-card-drag-handle" title="Ziehen und in einen anderen Ordner ablegen" aria-label="Firma verschieben">
+                                  ⠿
+                                </div>
+                                <button
+                                  type="button"
+                                  className="acquisition-card-toggle"
+                                  onClick={() => setOpenAcquisitionCards((old) => ({ ...old, [row.id]: !(old[row.id] ?? false) }))}
+                                  aria-expanded={openAcquisitionCards[row.id] ?? false}
+                                  style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "space-between", gap: "10px", textAlign: "left", background: "transparent", border: 0, padding: 0, cursor: "pointer" }}
+                                >
+                                  <div style={{ minWidth: 0 }}>
+                                    <h3 style={{ margin: 0, fontSize: "16px", overflowWrap: "anywhere" }}>{row.firma}</h3>
+                                  </div>
+                                  <span style={{ color: "#64748b", fontSize: "18px", flexShrink: 0 }}>{openAcquisitionCards[row.id] ?? false ? "▾" : "▸"}</span>
+                                </button>
+                              </div>
+
+                              {(openAcquisitionCards[row.id] ?? false) && (
+                                <div className="acquisition-card-details" style={{ display: "grid", gap: "12px", marginTop: "14px" }}>
+                                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: "10px", paddingRight: "8px" }}>
+                                    <div style={{ minWidth: 0 }}>
+                                      <div style={{ color: "#64748b", marginTop: "2px", fontSize: "13px" }}>{[row.branche, row.ort].filter(Boolean).join(" · ") || "Branche und Ort ergänzen"}</div>
+                                    </div>
+                                    <span style={{ background: badge.background, color: badge.color, padding: "5px 8px", borderRadius: "999px", fontSize: "11px", fontWeight: 800, whiteSpace: "nowrap" }}>{displayFolder}</span>
+                                  </div>
+
+                                  <div>
+                                    <div style={{ display: "flex", justifyContent: "space-between", fontSize: "11px", fontWeight: 700, color: "#64748b", marginBottom: "5px" }}>
+                                      <span>Informationsstand</span><span>{completion}%</span>
+                                    </div>
+                                    <div style={{ height: "7px", background: "#e2e8f0", borderRadius: "999px", overflow: "hidden" }}>
+                                      <div style={{ width: `${completion}%`, height: "100%", background: completion >= 80 ? "#16a34a" : completion >= 45 ? "#f59e0b" : "#64748b", borderRadius: "999px" }} />
+                                    </div>
+                                  </div>
+
+                                  <div style={{ display: "grid", gap: "7px", fontSize: "13px" }}>
+                                    <div><strong>Ansprechpartner:</strong> {row.ansprechpartner_name || "Noch nicht bekannt"}</div>
+                                    <div><strong>Telefon:</strong> {row.telefon_direkt || row.telefon_zentrale || "Noch nicht vorhanden"}</div>
+                                    <div><strong>Nächste Aktion:</strong> {row.next_action || "Noch festlegen"}</div>
+                                  </div>
+
+                                  <div style={{ background: missing.length ? "#fff7ed" : "#f0fdf4", color: missing.length ? "#9a3412" : "#166534", padding: "9px 10px", borderRadius: "9px", fontSize: "12px" }}>
+                                    <strong>{missing.length ? `${missing.length} Informationen fehlen` : "Kontaktdaten vorhanden"}</strong>
+                                    <div style={{ marginTop: "3px" }}>{missing.length ? missing.join(" · ") : "Bereit für den nächsten Schritt."}</div>
+                                  </div>
+
+                                  <div style={{ display: "flex", gap: "7px", flexWrap: "wrap", marginTop: "auto" }}>
+                                    <button className="primary-button" onClick={() => setAcquisitionDetailId(row.id)}>Details öffnen</button>
+                                    <button className="secondary-button" onClick={() => editAcquisition(row)}>Bearbeiten</button>
+                                  </div>
+                                </div>
+                              )}
+                            </div>
+                          )
+                        })}
+                      </div>}
+                    </div>
                   )
                 })}
               </div>
@@ -11940,7 +12323,7 @@ function App() {
                     </div>
                     <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(210px, 1fr))", gap: "12px", margin: "22px 0" }}>
                       {[
-                        ["Status", selectedAcquisition.status], ["Ansprechpartner", selectedAcquisition.ansprechpartner_name || "Fehlt"], ["Position", selectedAcquisition.ansprechpartner_position || "Fehlt"], ["Zentrale", selectedAcquisition.telefon_zentrale || "Fehlt"], ["Direkte Nummer", selectedAcquisition.telefon_direkt || "Fehlt"], ["E-Mail", selectedAcquisition.email || "Fehlt"], ["Website", selectedAcquisition.website || "Fehlt"], ["Nächste Aktion", selectedAcquisition.next_action || "Noch offen"],
+                        ["Ordner", getAcquisitionFolder(selectedAcquisition.status)], ["Ansprechpartner", selectedAcquisition.ansprechpartner_name || "Fehlt"], ["Position", selectedAcquisition.ansprechpartner_position || "Fehlt"], ["Zentrale", selectedAcquisition.telefon_zentrale || "Fehlt"], ["Direkte Nummer", selectedAcquisition.telefon_direkt || "Fehlt"], ["E-Mail", selectedAcquisition.email || "Fehlt"], ["Website", selectedAcquisition.website || "Fehlt"], ["Nächste Aktion", selectedAcquisition.next_action || "Noch offen"],
                       ].map(([label, value]) => <div key={label} style={{ background: "#f8fafc", border: "1px solid #e2e8f0", borderRadius: "12px", padding: "13px" }}><div style={{ color: "#64748b", fontSize: "12px", fontWeight: 800 }}>{label}</div><div style={{ marginTop: "5px", fontWeight: 700, overflowWrap: "anywhere" }}>{value}</div></div>)}
                     </div>
                     <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))", gap: "16px" }}>
@@ -12945,6 +13328,50 @@ function App() {
                       ))}
                     </div>
                   )}
+
+                  {tour && Object.values(deliveryDocuments).some((items) => items.length > 0) && (
+                    <div className="card tour-document-archive" style={{ marginTop: "18px" }}>
+                      <div className="tour-document-archive-header">
+                        <div>
+                          <h2 style={{ marginBottom: "4px" }}>Dokumentenarchiv der Tour</h2>
+                          <p style={{ margin: 0, color: "#64748b" }}>
+                            Frachtbriefe, Tankbelege, unterschriebene Dokumente und Schadensfotos dieser ausgewählten Tour.
+                          </p>
+                        </div>
+                        <span className="delivery-status">
+                          {Object.values(deliveryDocuments).reduce((sum, items) => sum + items.length, 0)} Dokumente
+                        </span>
+                      </div>
+
+                      <div className="tour-document-list">
+                        {Object.entries(deliveryDocuments).flatMap(([deliveryId, documents]) =>
+                          documents.map((document) => (
+                            <div className="tour-document-row" key={`management-archive-${document.id}`}>
+                              <div style={{ minWidth: 0 }}>
+                                <strong>{document.dokumenttyp}</strong>
+                                <div style={{ fontSize: "12px", color: "#64748b", overflowWrap: "anywhere" }}>
+                                  {document.dateiname} · Lieferung {deliveryId}
+                                </div>
+                                {document.erstellt_am && (
+                                  <div style={{ fontSize: "12px", color: "#64748b", marginTop: "3px" }}>
+                                    Hochgeladen: {new Date(document.erstellt_am).toLocaleString("de-DE")}
+                                  </div>
+                                )}
+                              </div>
+                              <div className="tour-document-actions">
+                                <button type="button" className="secondary-button" onClick={() => openTourDocument(document)}>
+                                  Öffnen
+                                </button>
+                                <button type="button" className="primary-button" onClick={() => downloadTourDocument(document)}>
+                                  Herunterladen
+                                </button>
+                              </div>
+                            </div>
+                          ))
+                        )}
+                      </div>
+                    </div>
+                  )}
                 </div>
                 )}
               </>
@@ -13245,6 +13672,7 @@ function App() {
                                   onClick={() => {
                                     setSelectedTourId(item.id)
                                     setTour(item)
+                                    void loadDeliveries(item.id)
                                     navigateTo("tour-management")
                                   }}
                                 >
@@ -13538,6 +13966,38 @@ function App() {
                 <button type="button" className="primary-button" onClick={() => void saveFinanceEntry()} disabled={financeLoading}>Buchung speichern</button>
                 {financeMessage && <p className="info-message">{financeMessage}</p>}
               </div>
+            </div>
+            <div className="card">
+              <h3>📊 Unternehmens-Cockpit & Ziele</h3>
+              <p style={{marginTop:0}}>Bezahlte Einnahmen, offene Rechnungsbeträge und geplante Fixkosten werden getrennt sichtbar.</p>
+              <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(170px,1fr))",gap:"10px"}}>
+                <div className="card"><strong>Offene Rechnungen</strong><div style={{fontSize:"22px",fontWeight:800,color:"#b45309"}}>{euro(financePendingIncome)}</div></div>
+                <div className="card"><strong>Geplante Fixkosten</strong><div style={{fontSize:"22px",fontWeight:800}}>{euro(plannedMonthCosts.reduce((sum, row) => sum + row.betrag, 0))}</div></div>
+                <div className="card"><strong>Planbares Ergebnis</strong><div style={{fontSize:"22px",fontWeight:800,color:financeResult >= 0 ? "#166534" : "#b91c1c"}}>{euro(financeResult)}</div></div>
+              </div>
+              <h4>🎯 Monatsziele für {financeMonth}</h4>
+              <div className="form-grid">
+                <label>Umsatzziel €<input type="number" min="0" value={goalForm.revenue} onChange={(e) => setGoalForm({...goalForm, revenue:e.target.value})} placeholder={activeGoal ? String(activeGoal.revenue) : "8000"}/></label>
+                <label>Gewinnziel €<input type="number" min="0" value={goalForm.profit} onChange={(e) => setGoalForm({...goalForm, profit:e.target.value})} placeholder={activeGoal ? String(activeGoal.profit) : "2000"}/></label>
+                <label>Akquise-Ziel (neue Kunden)<input type="number" min="0" value={goalForm.acquisitions} onChange={(e) => setGoalForm({...goalForm, acquisitions:e.target.value})} placeholder={activeGoal ? String(activeGoal.acquisitions) : "5"}/></label>
+              </div>
+              <button type="button" className="primary-button" onClick={saveFinanceGoal}>Ziele speichern</button>
+              {activeGoal && <div style={{marginTop:"12px",padding:"12px",background:"#f8fafc",borderRadius:"10px"}}>
+                <strong>Zielstatus</strong>
+                <div>Umsatz: {euro(financeIncome)} / {euro(activeGoal.revenue)} {financeIncome >= activeGoal.revenue ? "✅" : "⏳"}</div>
+                <div>Gewinn: {euro(financeResult)} / {euro(activeGoal.profit)} {financeResult >= activeGoal.profit ? "✅" : "⏳"}</div>
+                <div>Akquise-Ziel: {activeGoal.acquisitions} neue Kunden</div>
+              </div>}
+              <h4>🔁 Wiederkehrende geplante Kosten</h4>
+              <div className="form-grid">
+                <label>Bezeichnung<input value={plannedCostForm.name} onChange={(e) => setPlannedCostForm({...plannedCostForm, name:e.target.value})} placeholder="Versicherung"/></label>
+                <label>Kategorie<input value={plannedCostForm.category} onChange={(e) => setPlannedCostForm({...plannedCostForm, category:e.target.value})}/></label>
+                <label>Monatlicher Betrag €<input type="number" min="0" step="0.01" value={plannedCostForm.amount} onChange={(e) => setPlannedCostForm({...plannedCostForm, amount:e.target.value})} placeholder="300"/></label>
+                <label>Abbuchungstag (1–28)<input type="number" min="1" max="28" value={plannedCostForm.day} onChange={(e) => setPlannedCostForm({...plannedCostForm, day:e.target.value})}/></label>
+                <label>Startmonat<input type="month" value={plannedCostForm.startMonth} onChange={(e) => setPlannedCostForm({...plannedCostForm, startMonth:e.target.value})}/></label>
+              </div>
+              <button type="button" className="primary-button" onClick={() => void savePlannedCost()}>Monatliche Kosten anlegen</button>
+              {plannedCosts.length > 0 && <div style={{marginTop:"12px"}}>{plannedCosts.map((cost) => <div key={cost.id} style={{display:"flex",justifyContent:"space-between",gap:"8px",padding:"8px 0",borderBottom:"1px solid #e2e8f0"}}><span><strong>{cost.name}</strong><br/><small>{cost.category} · am {cost.day}. · {euro(cost.amount)}/Monat</small></span><button type="button" className="secondary-button" onClick={() => setPlannedCosts((items) => items.filter((item) => item.id !== cost.id))}>Entfernen</button></div>)}</div>}
             </div>
             <div className="card">
               <h3>🧮 Tour-Kalkulator</h3><p>Geplante Werte eingeben: Kraftstoff, Fahrerlohn, Gesamtkosten und Deckungsbeitrag werden automatisch berechnet.</p>
