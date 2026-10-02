@@ -116,6 +116,10 @@ type Delivery = {
   shipmentType?: string | null
   packageCount?: number | null
   additionalCharges?: AdditionalCharge[]
+  trackingEmail?: string | null
+  trackingNotifications?: boolean
+  trackingPickup?: boolean
+  trackingDelivery?: boolean
 }
 
 type AdditionalCharge = {
@@ -138,6 +142,10 @@ type NewDelivery = {
   shipmentType: string
   packageCount: string
   additionalCharges: AdditionalCharge[]
+  trackingEmail: string
+  trackingNotifications: boolean
+  trackingPickup: boolean
+  trackingDelivery: boolean
 }
 
 type Customer = {
@@ -222,15 +230,22 @@ type PermissionKey =
   | "touren"
   | "touren_anlegen"
   | "touren_verwalten"
+  | "tagessteuerung"
   | "kunden"
+  | "akquise"
   | "fahrzeuge"
   | "fahrzeugcheck"
+  | "reinigung"
   | "maengel"
   | "wartungen"
   | "dokumente"
   | "warnungen"
   | "fahrer"
+  | "arbeitszeit"
   | "auswertungen"
+  | "finanzen"
+  | "nachrichten"
+  | "sops"
 
 type AppUser = {
   id: string
@@ -242,20 +257,6 @@ type AppUser = {
   berechtigungen: PermissionKey[]
 }
 
-type DriverMessage = {
-  id: number
-  absender_id: string | null
-  empfaenger_id: string | null
-  betreff: string
-  nachricht: string
-  an_alle: boolean
-  gelesen: boolean
-  gelesen_am: string | null
-  erstellt_am: string
-  antwort_auf_id?: number | null
-  archiviert?: boolean
-  geloescht_am?: string | null
-}
 
 type SopRecord = {
   id: number
@@ -357,18 +358,24 @@ function getAcquisitionFolder(status: string | null | undefined): AcquisitionFol
 
 const permissionOptions: { key: PermissionKey; label: string }[] = [
   { key: "dashboard", label: "Dashboard" },
-  { key: "touren", label: "Touren ansehen" },
+  { key: "touren", label: "Touren ansehen / Meine Touren" },
   { key: "touren_anlegen", label: "Touren anlegen" },
   { key: "touren_verwalten", label: "Touren verwalten" },
+  { key: "tagessteuerung", label: "Tagessteuerung / Dispo" },
   { key: "kunden", label: "Kundenverwaltung" },
+  { key: "akquise", label: "Akquise" },
   { key: "fahrzeuge", label: "Fahrzeugverwaltung" },
   { key: "fahrzeugcheck", label: "Fahrzeugcheck" },
+  { key: "reinigung", label: "Fahrzeugreinigung" },
   { key: "maengel", label: "Mängel" },
   { key: "wartungen", label: "Wartungen" },
   { key: "dokumente", label: "Dokumente" },
   { key: "warnungen", label: "Warnungen" },
-  { key: "fahrer", label: "Fahrer & Arbeitszeit" },
+  { key: "fahrer", label: "Fahrer & Personal" },
+  { key: "arbeitszeit", label: "Arbeitszeit & Kilometer" },
   { key: "auswertungen", label: "Auswertungen" },
+  { key: "finanzen", label: "Finanzen & Kalkulation" },
+  { key: "sops", label: "SOP & Schulungen" },
 ]
 type DriverProfile = AppUser & {
   telefon: string
@@ -751,9 +758,11 @@ type DispatcherDeliveryStats = {
   currentStatus: string | null
 }
 
-function App() {
+function MainApp() {
   const [menuOpen, setMenuOpen] = useState(false)
   const [profileMenuOpen, setProfileMenuOpen] = useState(false)
+  const [notificationPanelOpen, setNotificationPanelOpen] = useState(false)
+  const [seenNotificationCount, setSeenNotificationCount] = useState(0)
       const [expandedMenuSections, setExpandedMenuSections] = useState<Record<string, boolean>>({
         arbeitsalltag: true,
         verwaltung: false,
@@ -802,6 +811,7 @@ function App() {
   const [acquisitionDraggingId, setAcquisitionDraggingId] = useState<number | null>(null)
   const [acquisitionDropTarget, setAcquisitionDropTarget] = useState<AcquisitionFolder | null>(null)
   const [acquisitionFolders, setAcquisitionFolders] = useState<string[]>([...ACQUISITION_FOLDERS])
+  const [selectedAcquisitionFolder, setSelectedAcquisitionFolder] = useState("Alle Firmen")
   const [newAcquisitionFolderName, setNewAcquisitionFolderName] = useState("")
   const [editingAcquisitionFolder, setEditingAcquisitionFolder] = useState<string | null>(null)
   const [editingAcquisitionFolderName, setEditingAcquisitionFolderName] = useState("")
@@ -977,25 +987,12 @@ function App() {
   const [appUsers, setAppUsers] = useState<AppUser[]>([])
   const [usersLoading, setUsersLoading] = useState(false)
   const [usersError, setUsersError] = useState("")
+  const [trackingTestLoading, setTrackingTestLoading] = useState(false)
+  const [trackingTestMessage, setTrackingTestMessage] = useState("")
   const [assignmentUsers, setAssignmentUsers] = useState<AppUser[]>([])
   const [assignmentUsersLoading, setAssignmentUsersLoading] = useState(false)
   const [permissionDrafts, setPermissionDrafts] = useState<Record<string, PermissionKey[]>>({})
   const [permissionSavingId, setPermissionSavingId] = useState<string | null>(null)
-
-  const [driverMessages, setDriverMessages] = useState<DriverMessage[]>([])
-  const [messageRecipients, setMessageRecipients] = useState<AppUser[]>([])
-  const [messageRecipientId, setMessageRecipientId] = useState("")
-  const [messageAudience, setMessageAudience] = useState<"single" | "all">("single")
-  const [messageSubject, setMessageSubject] = useState("")
-  const [messageBody, setMessageBody] = useState("")
-  const [messageLoading, setMessageLoading] = useState(false)
-  const [messageSaving, setMessageSaving] = useState(false)
-  const [messageError, setMessageError] = useState("")
-  const [messageSuccess, setMessageSuccess] = useState("")
-  const [selectedMessageId, setSelectedMessageId] = useState<number | null>(null)
-  const [messageFolder, setMessageFolder] = useState<"inbox" | "sent" | "compose">("inbox")
-  const [replyToMessageId, setReplyToMessageId] = useState<number | null>(null)
-  const [messageAttachment, setMessageAttachment] = useState<File | null>(null)
 
 
   const [sops, setSops] = useState<SopRecord[]>([])
@@ -1030,29 +1027,9 @@ function App() {
   const isAdmin = normalizedRole === "admin" || normalizedRole === "administrator"
   const isDisponent = normalizedRole === "disponent" || normalizedRole === "dispatcher"
   const canManageSops = isAdmin || isDisponent
-  const activeMessages = driverMessages.filter((message) => !message.archiviert && !message.geloescht_am)
-  const inboxMessages = activeMessages.filter(
-    (message) => message.empfaenger_id === currentUser?.id
-  )
-  const sentMessages = activeMessages
-    .filter((message) => message.absender_id === currentUser?.id)
-    .filter((message, index, all) => {
-      const messageKey = `${message.betreff}|${message.nachricht}|${message.erstellt_am}`
-      return all.findIndex(
-        (candidate) =>
-          `${candidate.betreff}|${candidate.nachricht}|${candidate.erstellt_am}` === messageKey
-      ) === index
-    })
-  const visibleMessages =
-    messageFolder === "sent"
-      ? sentMessages
-      : messageFolder === "compose"
-        ? []
-        : inboxMessages
-  const unreadMessageCount = inboxMessages.filter((message) => !message.gelesen).length
   const pendingSopCount = currentUser?.rolle === "Fahrer" ? pendingSops.length : 0
   const operationalAlertCount = isAdmin || isDisponent ? defectCounts.gesamt : 0
-  const totalNotificationCount = unreadMessageCount + pendingSopCount + operationalAlertCount
+  const totalNotificationCount = pendingSopCount + operationalAlertCount
 
 
   function hasPermission(permission: PermissionKey): boolean {
@@ -1066,13 +1043,19 @@ function App() {
     hasPermission("fahrzeuge") ||
     hasPermission("fahrer") ||
     hasPermission("warnungen") ||
-    hasPermission("auswertungen")
+    hasPermission("auswertungen") ||
+    hasPermission("tagessteuerung")
 
-  // Fahrer dürfen ihre eigene Auswertung sehen. Änderungen an Schichten
-  // sind ausschließlich für Admin und Disponent vorgesehen.
-  const canViewReports = currentUser?.rolle === "Fahrer" || hasPermission("auswertungen")
-  const canViewFinance = isAdmin || isDisponent || hasPermission("auswertungen")
-  const canEditShiftCorrections = isAdmin || isDisponent || hasPermission("auswertungen")
+  // Jede sichtbare Funktion kann separat vergeben werden. Admins haben
+  // weiterhin automatisch Zugriff auf alles.
+  const canViewReports = hasPermission("auswertungen")
+  const canViewFinance = hasPermission("finanzen")
+  const canEditShiftCorrections = hasPermission("arbeitszeit") || hasPermission("auswertungen")
+  const canViewCustomers = hasPermission("kunden")
+  const canViewAcquisition = hasPermission("akquise")
+  const canViewWorkTime = hasPermission("arbeitszeit")
+  const canViewMessages = hasPermission("nachrichten")
+  const canViewSops = hasPermission("sops")
 
   useEffect(() => {
     let mounted = true
@@ -1096,6 +1079,38 @@ function App() {
     return () => {
       mounted = false
       listener.subscription.unsubscribe()
+    }
+  }, [])
+
+  // Supabase-Sitzung nach längerer Inaktivität oder wenn der Browser
+  // zwischenzeitlich im Hintergrund war aktiv prüfen/auffrischen. Dadurch
+  // wird ein unnötiger Logout beim Zurückkehren zur App vermieden, sofern
+  // die Supabase-Session noch gültig bzw. per Refresh-Token verlängerbar ist.
+  useEffect(() => {
+    let cancelled = false
+
+    const refreshAuthSession = async () => {
+      try {
+        const { data, error } = await supabase.auth.getSession()
+        if (!cancelled && !error && data.session) {
+          setSession(data.session)
+        }
+      } catch (error) {
+        console.warn("Supabase-Session konnte nicht aktualisiert werden:", error)
+      }
+    }
+
+    const handleResume = () => {
+      void refreshAuthSession()
+    }
+
+    window.addEventListener("focus", handleResume)
+    document.addEventListener("visibilitychange", handleResume)
+
+    return () => {
+      cancelled = true
+      window.removeEventListener("focus", handleResume)
+      document.removeEventListener("visibilitychange", handleResume)
     }
   }, [])
 
@@ -1292,6 +1307,31 @@ function App() {
     setPage("dashboard")
   }
 
+  async function testTrackingFunction() {
+    if (!isAdmin || trackingTestLoading) return
+
+    setTrackingTestLoading(true)
+    setTrackingTestMessage("")
+
+    // Kontrollierter Verbindungstest: keine Lieferungsdaten werden übergeben,
+    // es wird keine E-Mail versendet und nichts in der Datenbank geändert.
+    const { data, error } = await supabase.functions.invoke("send-tracking-email", {
+      body: { action: "test" },
+    })
+
+    setTrackingTestLoading(false)
+
+    if (error) {
+      setTrackingTestMessage(`Test fehlgeschlagen: ${error.message}`)
+      return
+    }
+
+    const responseMessage = typeof data?.message === "string"
+      ? data.message
+      : "Die Funktion hat geantwortet. Es wurden keine E-Mails versendet."
+    setTrackingTestMessage(`Verbindung erfolgreich. ${responseMessage}`)
+  }
+
   async function loadAppUsers() {
     if (!isAdmin) return
 
@@ -1377,220 +1417,9 @@ function App() {
     await loadAssignmentUsers()
   }
 
-  async function loadMessageRecipients() {
-    if (!currentUser) return
 
-    const allowedRoles: UserRole[] = isAdmin
-      ? ["Fahrer", "Disponent"]
-      : isDisponent
-        ? ["Fahrer", "Admin"]
-        : ["Admin", "Disponent"]
 
-    const { data, error } = await supabase
-      .from("benutzer")
-      .select("id, email, name, rolle, aktiv, freigabestatus")
-      .in("rolle", allowedRoles)
-      .eq("aktiv", true)
-      .neq("id", currentUser.id)
-      .order("name", { ascending: true })
 
-    if (error) {
-      setMessageError(`Empfänger konnten nicht geladen werden: ${error.message}`)
-      return
-    }
-
-    setMessageRecipients(
-      (data || []).map((row) => ({
-        id: String(row.id),
-        email: String(row.email || ""),
-        name: String(row.name || ""),
-        rolle:
-          row.rolle === "Admin"
-            ? "Admin"
-            : row.rolle === "Disponent"
-              ? "Disponent"
-              : "Fahrer",
-        aktiv: row.aktiv !== false,
-        freigabestatus:
-          row.freigabestatus === "Freigegeben"
-            ? "Freigegeben"
-            : row.freigabestatus === "Gesperrt"
-              ? "Gesperrt"
-              : "Ausstehend",
-        berechtigungen: [],
-      }))
-    )
-  }
-
-  async function loadDriverMessages() {
-    if (!currentUser) return
-
-    setMessageLoading(true)
-    setMessageError("")
-
-    const { data, error } = await supabase
-      .from("fahrer_nachrichten")
-      .select("id, absender_id, empfaenger_id, betreff, nachricht, an_alle, gelesen, gelesen_am, erstellt_am, antwort_auf_id, archiviert, geloescht_am")
-      .order("erstellt_am", { ascending: false })
-      .limit(100)
-
-    if (error) {
-      setMessageError(`Nachrichten konnten nicht geladen werden: ${error.message}`)
-      setDriverMessages([])
-    } else {
-      setDriverMessages((data || []) as DriverMessage[])
-    }
-
-    setMessageLoading(false)
-  }
-
-  async function sendDriverMessage() {
-    if (!session?.user?.id) return
-
-    if (
-      (messageAudience === "single" && !messageRecipientId) ||
-      !messageSubject.trim() ||
-      !messageBody.trim()
-    ) {
-      setMessageError(
-        messageAudience === "all"
-          ? "Bitte Betreff und Nachricht ausfüllen."
-          : "Bitte Empfänger, Betreff und Nachricht ausfüllen."
-      )
-      setMessageSuccess("")
-      return
-    }
-
-    setMessageSaving(true)
-    setMessageError("")
-    setMessageSuccess("")
-
-    const recipients =
-      messageAudience === "all"
-        ? messageRecipients.filter((recipient) => recipient.rolle === "Fahrer")
-        : messageRecipients.filter((recipient) => recipient.id === messageRecipientId)
-
-    if (messageAudience === "all" && !isAdmin && !isDisponent) {
-      setMessageError("Nur Admin und Disposition dürfen an alle Fahrer schreiben.")
-      setMessageSaving(false)
-      return
-    }
-
-    if (recipients.length === 0) {
-      setMessageError("Es wurde kein gültiger Empfänger gefunden.")
-      setMessageSaving(false)
-      return
-    }
-
-    const rows = recipients.map((recipient) => ({
-      absender_id: session.user.id,
-      empfaenger_id: recipient.id,
-      betreff: messageSubject.trim(),
-      nachricht: messageBody.trim(),
-      an_alle: false,
-      gelesen: false,
-      gelesen_am: null,
-      antwort_auf_id: replyToMessageId,
-    }))
-
-    const { error } = await supabase
-      .from("fahrer_nachrichten")
-      .insert(rows)
-
-    if (error) {
-      setMessageError(`Nachricht konnte nicht gesendet werden: ${error.message}`)
-    } else {
-      setMessageSuccess(
-        messageAudience === "all"
-          ? `Nachricht wurde an ${recipients.length} Fahrer gesendet.`
-          : "Nachricht wurde erfolgreich gesendet."
-      )
-      setMessageRecipientId("")
-      setMessageAudience("single")
-      setMessageSubject("")
-      setMessageBody("")
-      setReplyToMessageId(null)
-      setMessageAttachment(null)
-      await loadDriverMessages()
-    }
-
-    setMessageSaving(false)
-  }
-
-  function startReply(message: DriverMessage) {
-    setReplyToMessageId(message.id)
-    setMessageFolder("compose")
-    setMessageRecipientId(message.absender_id || "")
-    setMessageSubject(message.betreff.startsWith("Re:") ? message.betreff : `Re: ${message.betreff}`)
-    setMessageBody(`\\n\\n--- Ursprüngliche Nachricht ---\\n${message.nachricht}`)
-  }
-
-  async function archiveDriverMessage(messageId: number) {
-    const { error } = await supabase.from("fahrer_nachrichten").update({ archiviert: true }).eq("id", messageId)
-    if (error) { setMessageError(`Archivieren fehlgeschlagen: ${error.message}`); return }
-    setDriverMessages((old) => old.map((m) => m.id === messageId ? { ...m, archiviert: true } : m))
-    setSelectedMessageId(null)
-  }
-
-  async function deleteDriverMessage(messageId: number) {
-    const { error } = await supabase.from("fahrer_nachrichten").update({ geloescht_am: new Date().toISOString() }).eq("id", messageId)
-    if (error) { setMessageError(`Löschen fehlgeschlagen: ${error.message}`); return }
-    setDriverMessages((old) => old.map((m) => m.id === messageId ? { ...m, geloescht_am: new Date().toISOString() } : m))
-    setSelectedMessageId(null)
-  }
-
-  async function markDriverMessageAsRead(messageId: number) {
-    if (!currentUser) return
-
-    const { error } = await supabase
-      .from("fahrer_nachrichten")
-      .update({
-        gelesen: true,
-        gelesen_am: new Date().toISOString(),
-      })
-      .eq("id", messageId)
-      .eq("empfaenger_id", currentUser.id)
-
-    if (error) {
-      setMessageError(`Nachricht konnte nicht als gelesen markiert werden: ${error.message}`)
-      return
-    }
-
-    setDriverMessages((old) =>
-      old.map((message) =>
-        message.id === messageId
-          ? { ...message, gelesen: true, gelesen_am: new Date().toISOString() }
-          : message
-      )
-    )
-  }
-
-  async function markAllDriverMessagesAsRead() {
-    if (!currentUser) return
-
-    const unreadMessages = driverMessages.filter((message) => !message.gelesen)
-    if (unreadMessages.length === 0) return
-
-    const now = new Date().toISOString()
-    const { error } = await supabase
-      .from("fahrer_nachrichten")
-      .update({ gelesen: true, gelesen_am: now })
-      .eq("empfaenger_id", currentUser.id)
-      .eq("gelesen", false)
-
-    if (error) {
-      setMessageError(`Nachrichten konnten nicht als gelesen markiert werden: ${error.message}`)
-      return
-    }
-
-    setDriverMessages((old) =>
-      old.map((message) =>
-        message.empfaenger_id === currentUser.id && !message.gelesen
-          ? { ...message, gelesen: true, gelesen_am: now }
-          : message
-      )
-    )
-  }
 
   async function changeUserRole(userId: string, rolle: UserRole) {
     if (!isAdmin) return
@@ -1744,31 +1573,7 @@ function App() {
     return () => window.clearInterval(interval)
   }, [])
 
-  useEffect(() => {
-    if (page !== "messages" || !currentUser) return
 
-    loadDriverMessages()
-    loadMessageRecipients()
-  }, [page, currentUser?.id, isAdmin, isDisponent])
-
-  useEffect(() => {
-    if (!currentUser?.id) return
-
-    const channel = supabase
-      .channel("fahrer-nachrichten-live")
-      .on(
-        "postgres_changes",
-        { event: "*", schema: "public", table: "fahrer_nachrichten" },
-        () => {
-          void loadDriverMessages()
-        }
-      )
-      .subscribe()
-
-    return () => {
-      void supabase.removeChannel(channel)
-    }
-  }, [currentUser?.id])
 
   // =====================================================
   // FAHRZEUGE
@@ -2050,6 +1855,99 @@ function App() {
   const [vehicleCheckMessage, setVehicleCheckMessage] =
     useState("")
 
+  type WeeklyVehicleCheck = {
+    week: string
+    reifenluftdruck: boolean
+    oelstand: boolean
+    adblue: boolean
+    bremsfluessigkeit: boolean
+    kuehlmittel: boolean
+    beleuchtung: boolean
+    tankbelege: boolean
+    fahrzeugunterlagen: boolean
+    bemerkung: string
+    erledigtVon: string
+    erledigtAm: string
+  }
+
+  const weeklyVehicleCheckItems: Array<{ key: keyof WeeklyVehicleCheck; label: string; icon: string }> = [
+    { key: "reifenluftdruck", label: "Reifendruck geprüft", icon: "🛞" },
+    { key: "oelstand", label: "Ölstand geprüft", icon: "🛢️" },
+    { key: "adblue", label: "AdBlue geprüft / aufgefüllt", icon: "💧" },
+    { key: "bremsfluessigkeit", label: "Bremsflüssigkeit geprüft", icon: "🧴" },
+    { key: "kuehlmittel", label: "Kühlmittel geprüft", icon: "🌡️" },
+    { key: "beleuchtung", label: "Beleuchtung geprüft", icon: "💡" },
+    { key: "tankbelege", label: "Tankbelege der Woche gesammelt", icon: "⛽" },
+    { key: "fahrzeugunterlagen", label: "Fahrzeugunterlagen kontrolliert", icon: "📄" },
+  ]
+
+  const getWeeklyCheckWeek = () => {
+    const now = new Date()
+    const day = now.getDay() || 7
+    const monday = new Date(now)
+    monday.setDate(now.getDate() - day + 1)
+    return monday.toISOString().slice(0, 10)
+  }
+
+  const createEmptyWeeklyVehicleCheck = (): WeeklyVehicleCheck => ({
+    week: getWeeklyCheckWeek(),
+    reifenluftdruck: false,
+    oelstand: false,
+    adblue: false,
+    bremsfluessigkeit: false,
+    kuehlmittel: false,
+    beleuchtung: false,
+    tankbelege: false,
+    fahrzeugunterlagen: false,
+    bemerkung: "",
+    erledigtVon: currentUser?.name || currentUser?.email || "",
+    erledigtAm: "",
+  })
+
+  const [weeklyVehicleCheck, setWeeklyVehicleCheck] =
+    useState<WeeklyVehicleCheck>(() => createEmptyWeeklyVehicleCheck())
+
+  useEffect(() => {
+    if (!vehicleCheckVehicleId) {
+      setWeeklyVehicleCheck(createEmptyWeeklyVehicleCheck())
+      return
+    }
+    const key = `transportapp-weekly-vehicle-check-${vehicleCheckVehicleId}-${getWeeklyCheckWeek()}`
+    try {
+      const stored = window.localStorage.getItem(key)
+      setWeeklyVehicleCheck(stored ? { ...createEmptyWeeklyVehicleCheck(), ...JSON.parse(stored) } : createEmptyWeeklyVehicleCheck())
+    } catch {
+      setWeeklyVehicleCheck(createEmptyWeeklyVehicleCheck())
+    }
+  }, [vehicleCheckVehicleId, currentUser?.id])
+
+  function updateWeeklyVehicleCheck(field: keyof WeeklyVehicleCheck, value: boolean | string) {
+    setWeeklyVehicleCheck((old) => {
+      const next = { ...old, [field]: value } as WeeklyVehicleCheck
+      if (vehicleCheckVehicleId) {
+        const key = `transportapp-weekly-vehicle-check-${vehicleCheckVehicleId}-${getWeeklyCheckWeek()}`
+        try { window.localStorage.setItem(key, JSON.stringify(next)) } catch { /* local storage can be unavailable */ }
+      }
+      return next
+    })
+  }
+
+  const weeklyVehicleCheckComplete = weeklyVehicleCheckItems.every(
+    (item) => weeklyVehicleCheck[item.key] === true
+  )
+
+  function markWeeklyVehicleCheckComplete() {
+    if (!vehicleCheckVehicleId || !weeklyVehicleCheckComplete) return
+    const next = { ...weeklyVehicleCheck, erledigtAm: new Date().toISOString(), erledigtVon: currentUser?.name || currentUser?.email || "Unbekannt" }
+    setWeeklyVehicleCheck(next)
+    try {
+      window.localStorage.setItem(
+        `transportapp-weekly-vehicle-check-${vehicleCheckVehicleId}-${getWeeklyCheckWeek()}`,
+        JSON.stringify(next)
+      )
+    } catch { /* ignore */ }
+  }
+
   const allChecksCompleted =
     checklist.every((value) => value !== null)
 
@@ -2089,7 +1987,7 @@ function App() {
   function updateChecklistDefect(
     index: number,
     field: "beschreibung" | "prioritaet",
-    value: string | AdditionalCharge[]
+    value: string | boolean | AdditionalCharge[]
   ) {
     setChecklistDefects((old) => ({
       ...old,
@@ -2238,6 +2136,8 @@ function App() {
   const [maintenanceMessage, setMaintenanceMessage] = useState("")
   const [maintenanceCompletionId, setMaintenanceCompletionId] = useState<number | null>(null)
   const [maintenanceActualCost, setMaintenanceActualCost] = useState("")
+  const [maintenanceCompletionDate, setMaintenanceCompletionDate] = useState("")
+  const [maintenanceCompletionKm, setMaintenanceCompletionKm] = useState("")
   const [maintenanceCompletionSaving, setMaintenanceCompletionSaving] = useState(false)
   const [maintenanceEditId, setMaintenanceEditId] = useState<number | null>(null)
   const [maintenanceEditStatus, setMaintenanceEditStatus] = useState("Offen")
@@ -2246,12 +2146,18 @@ function App() {
   function openMaintenanceCompletion(maintenanceId: number) {
     setMaintenanceCompletionId(maintenanceId)
     setMaintenanceActualCost("")
+    setMaintenanceCompletionDate(getToday())
+    setMaintenanceCompletionKm(fleetDetailVehicle?.kilometerstand != null ? String(fleetDetailVehicle.kilometerstand) : "")
+    setNextMaintenanceKm("")
+    setNextMaintenanceDate("")
   }
 
   function closeMaintenanceCompletion() {
     if (maintenanceCompletionSaving) return
     setMaintenanceCompletionId(null)
     setMaintenanceActualCost("")
+    setMaintenanceCompletionDate("")
+    setMaintenanceCompletionKm("")
   }
 
   async function completeMaintenance() {
@@ -2262,21 +2168,53 @@ function App() {
       alert("Bitte die tatsächlichen Kosten eingeben.")
       return
     }
-
     const actualCost = Number(actualCostText.replace(/\./g, "").replace(/,/g, "."))
     if (!Number.isFinite(actualCost) || actualCost < 0) {
       alert("Bitte einen gültigen Betrag für die tatsächlichen Kosten eingeben.")
       return
     }
+    if (!maintenanceCompletionDate) {
+      alert("Bitte das tatsächliche Wartungsdatum eingeben.")
+      return
+    }
+    const completionKm = maintenanceCompletionKm.trim() ? Number(maintenanceCompletionKm.replace(/\./g, "").replace(/,/g, ".")) : null
+    if (completionKm != null && (!Number.isFinite(completionKm) || completionKm < 0)) {
+      alert("Bitte einen gültigen Kilometerstand eingeben.")
+      return
+    }
+    const nextKm = nextMaintenanceKm.trim() ? Number(nextMaintenanceKm.replace(/\./g, "").replace(/,/g, ".")) : null
+    if (nextKm != null && (!Number.isFinite(nextKm) || nextKm < 0)) {
+      alert("Bitte einen gültigen Kilometerstand für die nächste Wartung eingeben.")
+      return
+    }
 
     setMaintenanceCompletionSaving(true)
+
+    const { data: maintenanceToComplete, error: maintenanceLoadError } = await supabase
+      .from("wartungen")
+      .select("id, datum, fahrzeug_id, kennzeichen, wartungsart, kosten")
+      .eq("id", maintenanceCompletionId)
+      .maybeSingle()
+
+    if (maintenanceLoadError || !maintenanceToComplete) {
+      alert("Die Wartung konnte nicht geladen werden. Bitte erneut versuchen.")
+      setMaintenanceCompletionSaving(false)
+      return
+    }
+
+    const completionPayload = {
+      status: "Erledigt",
+      datum: maintenanceCompletionDate,
+      kilometerstand: completionKm != null ? Math.round(completionKm) : null,
+      tatsaechliche_kosten: Math.round(actualCost * 100) / 100,
+      abgeschlossen_am: new Date().toISOString(),
+      naechste_wartung_km: nextKm != null ? Math.round(nextKm) : null,
+      naechste_wartung_datum: nextMaintenanceDate || null,
+    }
+
     const { error } = await supabase
       .from("wartungen")
-      .update({
-        status: "Erledigt",
-        tatsaechliche_kosten: actualCost,
-        abgeschlossen_am: new Date().toISOString(),
-      })
+      .update(completionPayload)
       .eq("id", maintenanceCompletionId)
 
     if (error) {
@@ -2285,16 +2223,50 @@ function App() {
       return
     }
 
+    const financeDescription = `Wartung ${maintenanceToComplete.kennzeichen || fleetDetailVehicle?.kennzeichen || "Fahrzeug"} · ${maintenanceCompletionId}`
+    const { data: existingFinance, error: financeLookupError } = await supabase
+      .from("finanzbuchungen")
+      .select("id")
+      .eq("kategorie", "Wartung")
+      .eq("beschreibung", financeDescription)
+      .limit(1)
+
+    if (!financeLookupError && (!existingFinance || existingFinance.length === 0)) {
+      const { error: financeError } = await supabase
+        .from("finanzbuchungen")
+        .insert({
+          datum: maintenanceCompletionDate,
+          typ: "Ausgabe",
+          kategorie: "Wartung",
+          beschreibung: financeDescription,
+          betrag: Math.round(actualCost * 100) / 100,
+          bezahlt: true,
+          tour_id: null,
+          erstellt_von: session?.user?.id || null,
+        })
+
+      if (financeError) {
+        console.error("Wartung abgeschlossen, Finanzbuchung konnte nicht angelegt werden:", financeError)
+        alert("Die Wartung wurde erledigt. Die Kosten konnten jedoch nicht automatisch in Finanzen verbucht werden. Bitte Berechtigungen der Tabelle finanzbuchungen prüfen.")
+      }
+    }
+
     const completedVehicle = fleetDetailVehicle
     setMaintenanceCompletionSaving(false)
     setMaintenanceCompletionId(null)
     setMaintenanceActualCost("")
+    setMaintenanceCompletionDate("")
+    setMaintenanceCompletionKm("")
 
     await loadFleetOverview()
     if (completedVehicle) {
       await openFleetDetail(completedVehicle)
     }
+    if (page === "finance") {
+      await loadFinanceRows()
+    }
   }
+
   const [fleetDetailVehicle, setFleetDetailVehicle] = useState<FleetVehicleInfo | null>(null)
   const [fleetDetailLoading, setFleetDetailLoading] = useState(false)
   const [fleetDetailError, setFleetDetailError] = useState("")
@@ -2418,6 +2390,7 @@ function App() {
   const [reportTourRows, setReportTourRows] = useState<any[]>([])
   const [reportShiftRows, setReportShiftRows] = useState<any[]>([])
   const [reportWorkRows, setReportWorkRows] = useState<any[]>([])
+  const [financeSection, setFinanceSection] = useState<"finanzen" | "kalkulation" | "ziele">("finanzen")
   const [financeMonth, setFinanceMonth] = useState(() => getToday().slice(0, 7))
   const [financeRows, setFinanceRows] = useState<FinanceEntry[]>([])
   const [financeLoading, setFinanceLoading] = useState(false)
@@ -2818,30 +2791,64 @@ function App() {
     setMaintenanceMessage("")
   }
 
-  function maintenanceState(vehicleItem: FleetVehicleInfo): { label: string; tone: "success" | "warning" | "danger" } {
-    const maintenance = vehicleItem.lastMaintenance
-    if (!maintenance) return { label: "Noch keine Wartung eingetragen", tone: "warning" }
-    if (String(maintenance.status || "Offen") === "Erledigt") {
-      return { label: "🟢 Wartung erledigt", tone: "success" }
+  function getValidNextMaintenanceKm(maintenance: Maintenance | null | undefined): number | null {
+    if (!maintenance || maintenance.naechste_wartung_km == null) return null
+    const nextKm = Number(maintenance.naechste_wartung_km)
+    if (!Number.isFinite(nextKm) || nextKm < 0) return null
+
+    // Ein nächster Wartungs-Kilometerstand muss nach dem Kilometerstand
+    // liegen, bei dem die aktuelle Wartung geplant/erledigt wurde.
+    // Alte oder fehlerhafte Werte (z. B. 20.000 km bei einer Wartung
+    // bei 99.800 km) dürfen keine falsche Warnung auslösen.
+    if (maintenance.kilometerstand != null) {
+      const maintenanceKm = Number(maintenance.kilometerstand)
+      if (Number.isFinite(maintenanceKm) && nextKm <= maintenanceKm) return null
     }
 
+    return nextKm
+  }
+
+  function maintenanceState(vehicleItem: FleetVehicleInfo): { label: string; tone: "success" | "warning" | "danger" } {
+    const history = Array.isArray(vehicleItem.maintenanceHistory) ? vehicleItem.maintenanceHistory : []
+    const openMaintenance = history
+      .filter((row) => String(row.status || "Offen") !== "Erledigt")
+      .sort((a, b) => String(b.datum || "").localeCompare(String(a.datum || "")))[0]
+
+    if (openMaintenance) {
+      const currentKm = vehicleItem.kilometerstand ?? 0
+      const dueDate = openMaintenance.datum || ""
+      const dueKm = getValidNextMaintenanceKm(openMaintenance)
+      const today = getToday()
+      const dueByDate = !!dueDate && dueDate <= today
+      const dueByKm = dueKm != null && currentKm >= dueKm
+      if (dueByDate || dueByKm) return { label: "🔴 Wartung fällig", tone: "danger" }
+      return { label: "🟡 Wartung geplant", tone: "warning" }
+    }
+
+    const maintenance = history
+      .filter((row) => String(row.status || "Offen") === "Erledigt")
+      .sort((a, b) => String((b as Maintenance).abgeschlossen_am || b.datum || "").localeCompare(String((a as Maintenance).abgeschlossen_am || a.datum || "")))[0] || vehicleItem.lastMaintenance
+
+    if (!maintenance) return { label: "Noch keine Wartung geplant", tone: "warning" }
+
     const currentKm = vehicleItem.kilometerstand ?? 0
-    if (maintenance.naechste_wartung_km != null && currentKm >= maintenance.naechste_wartung_km) {
-      return { label: "🔴 Wartung überfällig", tone: "danger" }
+    const validNextKm = getValidNextMaintenanceKm(maintenance)
+    if (validNextKm != null && currentKm >= validNextKm) {
+      return { label: "🔴 Nächste Wartung fällig", tone: "danger" }
     }
 
     if (maintenance.naechste_wartung_datum) {
-      const today = new Date().toISOString().slice(0, 10)
-      if (maintenance.naechste_wartung_datum < today) return { label: "🔴 Wartung überfällig", tone: "danger" }
+      const today = getToday()
+      if (maintenance.naechste_wartung_datum <= today) return { label: "🔴 Nächste Wartung fällig", tone: "danger" }
       const diffDays = Math.ceil((new Date(maintenance.naechste_wartung_datum).getTime() - new Date(today).getTime()) / 86400000)
-      if (diffDays <= 30) return { label: "🟠 Wartung bald fällig", tone: "warning" }
+      if (diffDays <= 30) return { label: "🟠 Nächste Wartung bald fällig", tone: "warning" }
     }
 
-    if (maintenance.naechste_wartung_km != null && maintenance.naechste_wartung_km - currentKm <= 1000) {
-      return { label: "🟠 Wartung bald fällig", tone: "warning" }
+    if (validNextKm != null && validNextKm - currentKm <= 1000) {
+      return { label: "🟠 Nächste Wartung bald fällig", tone: "warning" }
     }
 
-    return { label: "🟢 Wartung OK", tone: "success" }
+    return { label: "🟢 Wartung aktuell", tone: "success" }
   }
 
   function maintenanceWarningDetail(vehicleItem: FleetVehicleInfo): string {
@@ -2851,8 +2858,9 @@ function App() {
     const currentKm = vehicleItem.kilometerstand ?? 0
     const parts: string[] = []
 
-    if (maintenance.naechste_wartung_km != null) {
-      const kmLeft = maintenance.naechste_wartung_km - currentKm
+    const validNextKm = getValidNextMaintenanceKm(maintenance)
+    if (validNextKm != null) {
+      const kmLeft = validNextKm - currentKm
       if (kmLeft < 0) {
         parts.push(`${Math.abs(kmLeft).toLocaleString("de-DE")} km überfällig`)
       } else {
@@ -2874,6 +2882,44 @@ function App() {
     }
 
     return parts.join(" · ") || "Kein nächster Wartungstermin hinterlegt"
+  }
+
+  async function deleteMaintenance(maintenance: Maintenance) {
+    const label = `${maintenance.wartungsart || "Wartung"} · ${maintenance.datum || "ohne Datum"}`
+    if (!window.confirm(`Wartung wirklich löschen?\n\n${label}\nKennzeichen: ${maintenance.kennzeichen || "—"}`)) return
+    if (!window.confirm("Diese Wartung wird dauerhaft aus der Fahrzeugakte gelöscht. Auch die dazugehörige Wartungs-Ausgabe in Finanzen wird entfernt, sofern sie eindeutig zugeordnet werden kann. Wirklich löschen?")) return
+
+    try {
+      const financeDescription = `Wartung ${maintenance.kennzeichen || fleetDetailVehicle?.kennzeichen || "Fahrzeug"} · ${maintenance.id}`
+      const { error: financeDeleteError } = await supabase
+        .from("finanzbuchungen")
+        .delete()
+        .eq("kategorie", "Wartung")
+        .eq("beschreibung", financeDescription)
+
+      if (financeDeleteError) {
+        console.warn("Zugehörige Wartungs-Finanzbuchung konnte nicht gelöscht werden:", financeDeleteError)
+      }
+
+      const { error } = await supabase
+        .from("wartungen")
+        .delete()
+        .eq("id", maintenance.id)
+
+      if (error) {
+        alert("Die Wartung konnte nicht gelöscht werden:\n\n" + error.message)
+        return
+      }
+
+      setMaintenanceMessage("✓ Wartung wurde gelöscht.")
+      await loadFleetOverview()
+      if (fleetDetailVehicle) {
+        await openFleetDetail(fleetDetailVehicle)
+      }
+    } catch (error) {
+      alert("Die Wartung konnte nicht gelöscht werden. Bitte erneut versuchen.")
+      console.error("Fehler beim Löschen der Wartung:", error)
+    }
   }
 
   async function saveMaintenance() {
@@ -2922,6 +2968,35 @@ function App() {
       setMaintenanceSaving(false)
       return
     }
+
+    if (maintenanceEditId != null && maintenanceEditStatus === "Erledigt" && actualCost != null) {
+      const financeDescription = `Wartung ${maintenanceVehicle.kennzeichen} · ${maintenanceEditId}`
+      const { data: financeRows } = await supabase
+        .from("finanzbuchungen")
+        .select("id")
+        .eq("kategorie", "Wartung")
+        .eq("beschreibung", financeDescription)
+        .limit(1)
+      if (financeRows && financeRows.length > 0) {
+        await supabase.from("finanzbuchungen").update({
+          datum: maintenanceDate,
+          betrag: Math.round(actualCost * 100) / 100,
+          bezahlt: true,
+        }).eq("id", financeRows[0].id)
+      } else {
+        await supabase.from("finanzbuchungen").insert({
+          datum: maintenanceDate,
+          typ: "Ausgabe",
+          kategorie: "Wartung",
+          beschreibung: financeDescription,
+          betrag: Math.round(actualCost * 100) / 100,
+          bezahlt: true,
+          tour_id: null,
+          erstellt_von: session?.user?.id || null,
+        })
+      }
+    }
+
     setMaintenanceMessage(maintenanceEditId != null ? "✓ Wartung wurde geändert." : "✓ Wartung wurde gespeichert.")
     setMaintenanceSaving(false)
     await loadFleetOverview()
@@ -2945,6 +3020,7 @@ function App() {
     useState<number | null>(null)
   const [showCompletedTours, setShowCompletedTours] =
     useState(false)
+  const [driverPlanningDate, setDriverPlanningDate] = useState(getToday())
   const [tourSearchTerm, setTourSearchTerm] = useState("")
   const [tourStatusFilter, setTourStatusFilter] = useState("Alle")
   const [managementTourOpen, setManagementTourOpen] = useState(false)
@@ -3402,11 +3478,13 @@ function App() {
     // Die eigentliche Sicherheit wird zusätzlich durch Supabase RLS erzwungen.
     if (currentUser?.rolle === "Fahrer" && currentUser.id) {
       const today = getToday()
-      const dayAfterTomorrow = addDaysToDateString(today, 2)
+      // Fahrer bekommen einen rollierenden Planungshorizont von 7 Tagen:
+      // heute + die nächsten 6 Tage.
+      const planningHorizonEnd = addDaysToDateString(today, 6)
       tourQuery = tourQuery
         .eq("fahrer_id", currentUser.id)
         .gte("datum", today)
-        .lte("datum", dayAfterTomorrow)
+        .lte("datum", planningHorizonEnd)
     }
 
     const { data, error } = await tourQuery
@@ -3764,7 +3842,11 @@ function App() {
           kundenbetrag,
           art_der_sendung,
           packstuecke,
-          zusatzkosten
+          zusatzkosten,
+          tracking_empfaenger_email,
+          tracking_benachrichtigungen_aktiv,
+          tracking_meldung_abholung,
+          tracking_meldung_zustellung
         `
       )
       .eq("tour_id", tourId)
@@ -3839,6 +3921,10 @@ function App() {
         shipmentType: row.art_der_sendung || null,
         packageCount:
           row.packstuecke != null ? Number(row.packstuecke) : null,
+        trackingEmail: row.tracking_empfaenger_email || null,
+        trackingNotifications: Boolean(row.tracking_benachrichtigungen_aktiv),
+        trackingPickup: Boolean(row.tracking_meldung_abholung),
+        trackingDelivery: Boolean(row.tracking_meldung_zustellung),
         additionalCharges: Array.isArray(row.zusatzkosten)
           ? row.zusatzkosten
               .filter((charge: unknown): charge is AdditionalCharge => {
@@ -4040,17 +4126,18 @@ function App() {
         }
 
         const vehicle = vehicleMap.get(Number(maintenance.fahrzeug_id))
+        const validNextKm = getValidNextMaintenanceKm(maintenance as Maintenance)
         if (
-          maintenance.naechste_wartung_km != null &&
+          validNextKm != null &&
           vehicle?.kilometerstand != null &&
-          Number(vehicle.kilometerstand) >= Number(maintenance.naechste_wartung_km)
+          Number(vehicle.kilometerstand) >= validNextKm
         ) {
           warnings.push({
             id: `maintenance-km-${maintenance.id}`,
             priority: "dringend",
             icon: "🔧",
             title: `Kilometer-Wartung fällig – ${vehicle.kennzeichen || "Fahrzeug"}`,
-            detail: `${vehicle.kilometerstand} km · Wartung bei ${maintenance.naechste_wartung_km} km`,
+            detail: `${vehicle.kilometerstand} km · nächste Wartung bei ${validNextKm} km`,
             page: "fleet",
           })
         }
@@ -4912,6 +4999,7 @@ function App() {
     setReportError("")
 
     const driverId = currentUser.rolle === "Fahrer" ? currentUser.id : reportDriverId
+    if (currentUser.rolle === "Fahrer" && reportDriverId !== currentUser.id) setReportDriverId(currentUser.id)
     let query = supabase
       .from("touren")
       .select("id,tournummer,datum,fahrer_id,fahrer,km_start,km_ende,status")
@@ -5679,10 +5767,52 @@ function App() {
   async function arriveAtCustomer(
     id: number
   ) {
-    const currentDelivery = deliveries.find((item) => item.id === id)
+    let currentDelivery = deliveries.find((item) => item.id === id)
     if (!currentDelivery) return
+
+    // Nach längerer Pause, App-Wechsel oder Browser-Hintergrundbetrieb kann
+    // der lokale React-Stand veraltet sein. Deshalb lesen wir den aktuellen
+    // Datensatz noch einmal aus Supabase, bevor wir den nächsten Schritt
+    // blockieren. So verliert der Fahrer seinen bereits dokumentierten
+    // Fortschritt nicht nur deshalb, weil die App zwischenzeitlich neu
+    // geladen wurde.
+    const { data: freshRow, error: freshError } = await supabase
+      .from("lieferungen")
+      .select("id, status, abholadresse, abhol_ankunftszeit, abhol_abfahrtszeit, geplante_zeit, ankunftszeit")
+      .eq("id", id)
+      .maybeSingle()
+
+    if (!freshError && freshRow) {
+      currentDelivery = {
+        ...currentDelivery,
+        status: (freshRow.status as Delivery["status"]) || currentDelivery.status,
+        pickupAddress: freshRow.abholadresse || currentDelivery.pickupAddress || null,
+        pickupArrivalTime: normalizeTime(freshRow.abhol_ankunftszeit) || currentDelivery.pickupArrivalTime || null,
+        pickupDepartureTime: normalizeTime(freshRow.abhol_abfahrtszeit) || currentDelivery.pickupDepartureTime || null,
+        plannedTime: normalizeTime(freshRow.geplante_zeit) || currentDelivery.plannedTime,
+        arrivalTime: normalizeTime(freshRow.ankunftszeit) || currentDelivery.arrivalTime,
+      }
+    }
+
+    // Ist eine Abfahrt von der Abholstelle bereits gespeichert, gilt die
+    // Fahrt fachlich als begonnen – auch wenn ein alter/unterbrochener
+    // Browser-Stand noch "Offen" anzeigt. Wir reparieren den Zwischenstatus
+    // automatisch und lassen den Fahrer weiterarbeiten.
+    if (currentDelivery.status === "Offen" && currentDelivery.pickupDepartureTime) {
+      const repaired = await updateDelivery(id, { status: "Unterwegs" })
+      if (!repaired) return
+      currentDelivery = { ...currentDelivery, status: "Unterwegs" }
+      setDeliveries((old) =>
+        old.map((item) => item.id === id ? { ...item, status: "Unterwegs" } : item)
+      )
+    }
+
     if (currentDelivery.status !== "Unterwegs") {
-      alert("Bitte zuerst die Fahrt zur Lieferung starten.")
+      if (currentDelivery.status === "Beim Kunden") {
+        setActiveDelivery(id)
+        return
+      }
+      alert("Bitte zuerst die Fahrt zur Lieferung starten. Dein bereits gespeicherter Fortschritt bleibt erhalten.")
       return
     }
 
@@ -5694,14 +5824,7 @@ function App() {
     const currentTime =
       getCurrentTime()
 
-    const delivery =
-      deliveries.find(
-        (item) => item.id === id
-      )
-
-    if (!delivery) {
-      return
-    }
+    const delivery = currentDelivery
 
     const punctuality =
       calculatePunctuality(
@@ -5733,6 +5856,57 @@ function App() {
       )
     )
 
+    setActiveDelivery(id)
+  }
+
+  async function goToPreviousDeliveryStep(id: number) {
+    const delivery = deliveries.find((item) => item.id === id)
+    if (!delivery || currentUser?.rolle !== "Fahrer") return
+
+    let targetStatus: Delivery["status"] | null = null
+    const changes: Record<string, unknown> = {}
+
+    if (delivery.status === "Beim Kunden") {
+      targetStatus = "Unterwegs"
+      changes.status = "Unterwegs"
+      changes.ankunftszeit = null
+      changes.puenktlichkeit = null
+    } else if (delivery.status === "Unterwegs") {
+      targetStatus = "Offen"
+      changes.status = "Offen"
+    } else if (delivery.status === "Erledigt") {
+      targetStatus = "Beim Kunden"
+      changes.status = "Beim Kunden"
+      changes.angeliefert_zeit = null
+      changes.abfahrtszeit = null
+    }
+
+    if (!targetStatus) return
+
+    const confirmed = window.confirm(
+      `Möchtest du wirklich einen Schritt zurückgehen? Der aktuelle Schritt wird dabei zurückgesetzt.`
+    )
+    if (!confirmed) return
+
+    const success = await updateDelivery(id, changes)
+    if (!success) return
+
+    setDeliveries((old) =>
+      old.map((item) =>
+        item.id === id
+          ? {
+              ...item,
+              status: targetStatus!,
+              ...(targetStatus === "Unterwegs"
+                ? { arrivalTime: undefined, punctuality: undefined }
+                : {}),
+              ...(targetStatus === "Beim Kunden"
+                ? { deliveredTime: undefined, departureTime: undefined }
+                : {}),
+            }
+          : item
+      )
+    )
     setActiveDelivery(id)
   }
 
@@ -6172,6 +6346,10 @@ function App() {
         shipmentType: "",
         packageCount: "",
         additionalCharges: [],
+        trackingEmail: "",
+        trackingNotifications: false,
+        trackingPickup: false,
+        trackingDelivery: false,
       },
     ])
 
@@ -6205,6 +6383,10 @@ function App() {
         shipmentType: "",
         packageCount: "",
         additionalCharges: [],
+        trackingEmail: "",
+        trackingNotifications: false,
+        trackingPickup: false,
+        trackingDelivery: false,
       },
     ])
   }
@@ -6243,7 +6425,7 @@ function App() {
   function updateNewDelivery(
     index: number,
     field: keyof NewDelivery,
-    value: string | AdditionalCharge[]
+    value: string | boolean | AdditionalCharge[]
   ) {
     setNewDeliveries((old) =>
       old.map((delivery, i) =>
@@ -6281,6 +6463,10 @@ function App() {
         shipmentType: "",
         packageCount: "",
         additionalCharges: [],
+        trackingEmail: "",
+        trackingNotifications: false,
+        trackingPickup: false,
+        trackingDelivery: false,
       },
     ])
   }
@@ -6543,6 +6729,10 @@ function App() {
     useState("")
   const [editingDeliveryAmount, setEditingDeliveryAmount] =
     useState("")
+  const [editingTrackingEmail, setEditingTrackingEmail] = useState("")
+  const [editingTrackingNotifications, setEditingTrackingNotifications] = useState(false)
+  const [editingTrackingPickup, setEditingTrackingPickup] = useState(false)
+  const [editingTrackingDelivery, setEditingTrackingDelivery] = useState(false)
 
   const [addingManagementDelivery, setAddingManagementDelivery] =
     useState(false)
@@ -7198,6 +7388,10 @@ function App() {
     setEditingDeliveryAmount(
       delivery.customerAmount != null ? String(delivery.customerAmount).replace(".", ",") : ""
     )
+    setEditingTrackingEmail(delivery.trackingEmail || "")
+    setEditingTrackingNotifications(Boolean(delivery.trackingNotifications))
+    setEditingTrackingPickup(Boolean(delivery.trackingPickup))
+    setEditingTrackingDelivery(Boolean(delivery.trackingDelivery))
   }
 
   function cancelEditingDelivery() {
@@ -7206,6 +7400,10 @@ function App() {
     setEditingDeliveryAddress("")
     setEditingDeliveryTime("")
     setEditingDeliveryAmount("")
+    setEditingTrackingEmail("")
+    setEditingTrackingNotifications(false)
+    setEditingTrackingPickup(false)
+    setEditingTrackingDelivery(false)
   }
 
   async function saveEditedDelivery() {
@@ -7239,6 +7437,10 @@ function App() {
           editingDeliveryAmount.trim() === ""
             ? null
             : Number(editingDeliveryAmount.replace(",", ".")),
+        tracking_empfaenger_email: editingTrackingEmail.trim() || null,
+        tracking_benachrichtigungen_aktiv: Boolean(editingTrackingNotifications && editingTrackingEmail.trim()),
+        tracking_meldung_abholung: Boolean(editingTrackingNotifications && editingTrackingPickup),
+        tracking_meldung_zustellung: Boolean(editingTrackingNotifications && editingTrackingDelivery),
       })
       .eq(
         "id",
@@ -8497,13 +8699,13 @@ function App() {
     setAcquisitionDropTarget(null)
   }
 
-  function handleAcquisitionDragOver(event: DragEvent<HTMLDivElement>, folder: AcquisitionFolder) {
+  function handleAcquisitionDragOver(event: DragEvent<HTMLElement>, folder: AcquisitionFolder) {
     event.preventDefault()
     event.dataTransfer.dropEffect = "move"
     if (acquisitionDropTarget !== folder) setAcquisitionDropTarget(folder)
   }
 
-  async function moveAcquisitionToFolder(event: DragEvent<HTMLDivElement>, folder: AcquisitionFolder) {
+  async function moveAcquisitionToFolder(event: DragEvent<HTMLElement>, folder: AcquisitionFolder) {
     event.preventDefault()
     const rawId = event.dataTransfer.getData("text/plain")
     const rowId = Number(rawId)
@@ -8518,16 +8720,29 @@ function App() {
     if ((folder === "Nicht zugeordnet" && !row.status) || currentStatus === folder) return
 
     setAcquisitionLoading(true)
-    const { error } = await supabase
+    const { data: updatedRow, error } = await supabase
       .from("akquise_kontakte")
       .update({ status: targetStatus })
       .eq("id", rowId)
+      .select("id, status")
+      .maybeSingle()
 
     if (error) {
       setAcquisitionMessage(`„${row.firma}“ konnte nicht verschoben werden: ${error.message}`)
+    } else if (!updatedRow) {
+      // Supabase kann bei durch RLS blockierten Updates ohne Fehler null Zeilen zurückgeben.
+      // In diesem Fall darf die Oberfläche die Verschiebung nicht als gespeichert darstellen.
+      setAcquisitionMessage(
+        `„${row.firma}“ wurde nicht dauerhaft verschoben. Bitte prüfe die UPDATE-Berechtigung (RLS) für „akquise_kontakte“.`,
+      )
+      await loadAcquisitionRows()
     } else {
-      setAcquisitionRows((old) => old.map((item) => item.id === rowId ? { ...item, status: targetStatus } : item))
-      setAcquisitionMessage(`„${row.firma}“ wurde in „${folder}“ verschoben.`)
+      setAcquisitionRows((old) =>
+        old.map((item) =>
+          item.id === rowId ? { ...item, status: updatedRow.status } : item,
+        ),
+      )
+      setAcquisitionMessage(`„${row.firma}“ wurde in „${folder}“ verschoben und gespeichert.`)
     }
     setAcquisitionLoading(false)
   }
@@ -8579,29 +8794,29 @@ function App() {
     const requiredPermission: Partial<Record<typeof nextPage, PermissionKey>> = {
       dashboard: "dashboard",
       vehicle: "fahrzeugcheck",
-      cleaning: "fahrzeuge",
+      cleaning: "reinigung",
       tour: "touren",
       "tour-create": "touren_anlegen",
       "tour-management": "touren_verwalten",
       customers: "kunden",
-      acquisition: "kunden",
+      acquisition: "akquise",
       defect: "maengel",
-      dispatcher: "touren_verwalten",
+      dispatcher: "tagessteuerung",
       fleet: "fahrzeuge",
       "driver-management": "fahrer",
-      "work-time": "fahrer",
+      "work-time": "arbeitszeit",
       reports: "auswertungen",
-      finance: "auswertungen",
+      finance: "finanzen",
       documents: "dokumente",
       warnings: "warnungen",
     }
 
     if (nextPage === "users" && !isAdmin) return
-    if (nextPage === "sops" && !currentUser) return
-    if ((nextPage === "customers" || nextPage === "acquisition") && !(isAdmin || currentUser?.rolle === "Disponent" || hasPermission("kunden") || hasPermission("touren_verwalten") || hasPermission("touren_anlegen"))) return
-    const canOpenReports = nextPage === "reports" && canViewReports
-    const canOpenFinance = nextPage === "finance" && canViewFinance
-    if (nextPage !== "users" && nextPage !== "customers" && nextPage !== "acquisition" && nextPage !== "sops" && !canOpenReports && !canOpenFinance && requiredPermission[nextPage] && !hasPermission(requiredPermission[nextPage]!)) return
+    if (requiredPermission[nextPage] && !hasPermission(requiredPermission[nextPage]!)) return
+    if (nextPage === "sops" && !canViewSops) return
+    if (nextPage === "reports" && !canViewReports) return
+    if (nextPage === "finance" && !canViewFinance) return
+    if (nextPage === "messages" && !canViewMessages) return
 
     setPage(nextPage)
 
@@ -8624,11 +8839,6 @@ function App() {
 
     if (nextPage === "sops") {
       loadSops()
-    }
-
-    if (nextPage === "messages") {
-      loadDriverMessages()
-      loadMessageRecipients()
     }
 
     if (nextPage === "defect") {
@@ -9346,18 +9556,72 @@ function App() {
           </div>
         </div>
         <div className="header-actions">
-          <button
-            type="button"
-            className="header-icon-button header-notification-button"
-            aria-label="Alle Benachrichtigungen öffnen"
-            title="Benachrichtigungen"
-            onClick={() => navigateTo("messages")}
-          >
-            <span aria-hidden="true">🔔</span>
-            {totalNotificationCount > 0 && (
-              <span className="header-notification-badge">{totalNotificationCount}</span>
+          <div className="header-notification-menu">
+            <button
+              type="button"
+              className="header-icon-button header-notification-button"
+              aria-label="Benachrichtigungen anzeigen"
+              title="Benachrichtigungen"
+              aria-expanded={notificationPanelOpen}
+              aria-haspopup="dialog"
+              onClick={() => {
+                setNotificationPanelOpen((open) => {
+                  const nextOpen = !open
+                  if (nextOpen) {
+                    setSeenNotificationCount(totalNotificationCount)
+                  }
+                  return nextOpen
+                })
+              }}
+            >
+              <span aria-hidden="true">🔔</span>
+              {Math.max(0, totalNotificationCount - seenNotificationCount) > 0 && (
+                <span className="header-notification-badge">
+                  {Math.max(0, totalNotificationCount - seenNotificationCount)}
+                </span>
+              )}
+            </button>
+            {notificationPanelOpen && (
+              <div className="header-notification-dropdown" role="dialog" aria-label="Benachrichtigungen">
+                <div className="header-notification-dropdown-header">
+                  <strong>Benachrichtigungen</strong>
+                  <button
+                    type="button"
+                    className="header-notification-close"
+                    aria-label="Benachrichtigungen schließen"
+                    onClick={() => setNotificationPanelOpen(false)}
+                  >
+                    ×
+                  </button>
+                </div>
+                <div className="header-notification-list">
+                  {pendingSopCount > 0 && (
+                    <div className="header-notification-item">
+                      <span className="header-notification-item-icon">📋</span>
+                      <div>
+                        <strong>{pendingSopCount} offene {pendingSopCount === 1 ? "SOP" : "SOPs"}</strong>
+                        <span>Bitte lesen und bestätigen.</span>
+                      </div>
+                    </div>
+                  )}
+                  {operationalAlertCount > 0 && (
+                    <div className="header-notification-item">
+                      <span className="header-notification-item-icon">⚠️</span>
+                      <div>
+                        <strong>{operationalAlertCount} offene Meldung{operationalAlertCount === 1 ? "" : "en"}</strong>
+                        <span>Fahrzeugmängel bitte prüfen.</span>
+                      </div>
+                    </div>
+                  )}
+                  {totalNotificationCount === 0 && (
+                    <div className="header-notification-empty">
+                      Keine neuen Benachrichtigungen.
+                    </div>
+                  )}
+                </div>
+              </div>
             )}
-          </button>
+          </div>
           <div className="header-profile-menu">
             <button
               type="button"
@@ -9431,7 +9695,7 @@ function App() {
         </button>
         <div className={expandedMenuSections.arbeitsalltag ? "navigation-submenu open" : "navigation-submenu"}>
 
-        <button
+        {hasPermission("dashboard") && <button
           className={
             page === "dashboard"
               ? "nav active"
@@ -9442,9 +9706,9 @@ function App() {
           }
         >
           <span style={{ marginRight: "8px" }}>🏠</span>Dashboard
-        </button>
+        </button>}
 
-        <button
+        {hasPermission("fahrzeugcheck") && <button
           className={
             page === "vehicle"
               ? "nav active"
@@ -9455,14 +9719,23 @@ function App() {
           }
         >
           <span style={{ marginRight: "8px" }}>✅</span>Fahrzeugcheck
-        </button>
+        </button>}
 
-        {hasPermission("fahrzeuge") && (
+        {hasPermission("reinigung") && (
           <button
             className={page === "cleaning" ? "nav active" : "nav"}
             onClick={() => navigateTo("cleaning")}
           >
             <span style={{ marginRight: "8px" }}>🧽</span>Fahrzeugreinigung
+          </button>
+        )}
+
+        {hasPermission("maengel") && (
+          <button
+            className={page === "defect" ? "nav active" : "nav"}
+            onClick={() => navigateTo("defect")}
+          >
+            <span style={{ marginRight: "8px" }}>⚠️</span>Mängel
           </button>
         )}
 
@@ -9504,21 +9777,21 @@ function App() {
           <span>{expandedMenuSections.administration ? "▾" : "▸"}</span>
         </button>
         <div className={expandedMenuSections.administration ? "navigation-submenu open" : "navigation-submenu"}>
-          {(isAdmin || currentUser?.rolle === "Disponent" || hasPermission("kunden") || hasPermission("touren_verwalten") || hasPermission("touren_anlegen")) && (
-            <>
-              <button
-                className={page === "customers" ? "nav active" : "nav"}
-                onClick={() => navigateTo("customers")}
-              >
-                <span style={{ marginRight: "8px" }}>👥</span>Kunden
-              </button>
-              <button
-                className={page === "acquisition" ? "nav active" : "nav"}
-                onClick={() => navigateTo("acquisition")}
-              >
-                <span style={{ marginRight: "8px" }}>🎯</span>Akquise
-              </button>
-            </>
+          {canViewCustomers && (
+            <button
+              className={page === "customers" ? "nav active" : "nav"}
+              onClick={() => navigateTo("customers")}
+            >
+              <span style={{ marginRight: "8px" }}>👥</span>Kunden
+            </button>
+          )}
+          {canViewAcquisition && (
+            <button
+              className={page === "acquisition" ? "nav active" : "nav"}
+              onClick={() => navigateTo("acquisition")}
+            >
+              <span style={{ marginRight: "8px" }}>🎯</span>Akquise
+            </button>
           )}
 
           {hasPermission("fahrzeuge") && (
@@ -9536,6 +9809,15 @@ function App() {
               onClick={() => navigateTo("driver-management")}
             >
               <span style={{ marginRight: "8px" }}>👨‍✈️</span>Fahrer & Personal
+            </button>
+          )}
+
+          {hasPermission("arbeitszeit") && (
+            <button
+              className={page === "work-time" ? "nav active" : "nav"}
+              onClick={() => navigateTo("work-time")}
+            >
+              <span style={{ marginRight: "8px" }}>⏱️</span>Arbeitszeit & Kilometer
             </button>
           )}
 
@@ -9583,7 +9865,7 @@ function App() {
           </>
         )}
 
-                {hasPermission("touren_verwalten") && (
+                {hasPermission("tagessteuerung") && (
           <button
             className={page === "dispatcher" ? "nav active" : "nav"}
             onClick={() => navigateTo("dispatcher")}
@@ -9620,12 +9902,45 @@ function App() {
         >
           <span style={{ marginRight: "8px" }}>📊</span>Auswertung
         </button>}
-        {canViewFinance && <button
-          className={page === "finance" ? "nav active" : "nav"}
-          onClick={() => navigateTo("finance")}
-        >
-          <span style={{ marginRight: "8px" }}>💶</span>Finanzen & Kalkulation
-        </button>}
+        {canViewFinance && (
+          <>
+            <button
+              className={page === "finance" ? "nav active" : "nav"}
+              onClick={() => {
+                setFinanceSection("finanzen")
+                navigateTo("finance")
+              }}
+            >
+              <span style={{ marginRight: "8px" }}>💶</span>Finanzen
+              <span style={{ marginLeft: "auto" }}>{page === "finance" ? "▾" : "▸"}</span>
+            </button>
+            {page === "finance" && (
+              <div className="navigation-submenu open finance-navigation-submenu">
+                <button
+                  type="button"
+                  className={financeSection === "finanzen" ? "nav active" : "nav"}
+                  onClick={() => setFinanceSection("finanzen")}
+                >
+                  💳 Finanzen
+                </button>
+                <button
+                  type="button"
+                  className={financeSection === "kalkulation" ? "nav active" : "nav"}
+                  onClick={() => setFinanceSection("kalkulation")}
+                >
+                  🧮 Kalkulation
+                </button>
+                <button
+                  type="button"
+                  className={financeSection === "ziele" ? "nav active" : "nav"}
+                  onClick={() => setFinanceSection("ziele")}
+                >
+                  🎯 Ziele
+                </button>
+              </div>
+            )}
+          </>
+        )}
 
         {hasPermission("warnungen") && (
           <button
@@ -9654,26 +9969,12 @@ function App() {
         </button>
         <div className={expandedMenuSections.einstellungen ? "navigation-submenu open" : "navigation-submenu"}>
 
-        <button
-          className={page === "messages" ? "nav active" : "nav"}
-          onClick={() => navigateTo("messages")}
-        >
-          <span style={{ marginRight: "8px" }}>✉️</span>Nachrichten
-          {unreadMessageCount > 0 && (
-            <span className="defect-badges">
-              <span className="defect-badge urgent">
-                {unreadMessageCount}
-              </span>
-            </span>
-          )}
-        </button>
-
-        <button
+        {canViewSops && <button
           className={page === "sops" ? "nav active" : "nav"}
           onClick={() => navigateTo("sops")}
         >
           <span style={{ marginRight: "8px" }}>📚</span>SOP & Schulungen
-        </button>
+        </button>}
 
 
 </div>
@@ -9682,300 +9983,6 @@ function App() {
       </nav>
 
       <main className="content">
-
-        {page === "messages" && (
-          <section>
-            <div className="card">
-              <h2>✉️ Nachrichten</h2>
-              <p>
-                Dein Nachrichtenpostfach für Fahrer, Disposition und Administration.
-                Du kannst nur an die für deine Rolle freigegebenen Empfänger schreiben.
-              </p>
-
-              <div
-                style={{
-                  display: "flex",
-                  gap: "8px",
-                  flexWrap: "wrap",
-                  marginBottom: "18px",
-                }}
-              >
-                <button
-                  type="button"
-                  onClick={() => setMessageFolder("inbox")}
-                  style={{
-                    fontWeight: messageFolder === "inbox" ? "700" : "400",
-                    background: messageFolder === "inbox" ? "#dbeafe" : "#ffffff",
-                  }}
-                >
-                  📥 Posteingang {unreadMessageCount > 0 ? `(${unreadMessageCount})` : ""}
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setMessageFolder("sent")}
-                  style={{
-                    fontWeight: messageFolder === "sent" ? "700" : "400",
-                    background: messageFolder === "sent" ? "#dbeafe" : "#ffffff",
-                  }}
-                >
-                  📤 Gesendet
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setMessageFolder("compose")}
-                  style={{
-                    fontWeight: messageFolder === "compose" ? "700" : "400",
-                    background: messageFolder === "compose" ? "#dbeafe" : "#ffffff",
-                  }}
-                >
-                  ✍️ Neue Nachricht
-                </button>
-              </div>
-
-              {messageError && <p className="error-message">{messageError}</p>}
-              {messageSuccess && <p className="success-message">{messageSuccess}</p>}
-
-              {messageFolder === "compose" && (
-                <div className="card" style={{ marginBottom: "20px" }}>
-                  <h3>Neue Nachricht</h3>
-
-                {(isAdmin || isDisponent) && (
-                  <label>
-                    Versandart
-                    <select
-                      value={messageAudience}
-                      onChange={(event) => {
-                        const value = event.target.value as "single" | "all"
-                        setMessageAudience(value)
-                        setMessageRecipientId("")
-                      }}
-                    >
-                      <option value="single">Einzelner Empfänger</option>
-                      <option value="all">An alle aktiven Fahrer</option>
-                    </select>
-                  </label>
-                )}
-
-                {messageAudience === "single" && (
-                  <label>
-                    Empfänger
-                    <select
-                      value={messageRecipientId}
-                      onChange={(event) => setMessageRecipientId(event.target.value)}
-                    >
-                      <option value="">Empfänger auswählen</option>
-                      {messageRecipients.map((recipient) => (
-                        <option key={recipient.id} value={recipient.id}>
-                          {recipient.name || recipient.email} · {recipient.rolle}
-                        </option>
-                      ))}
-                    </select>
-                  </label>
-                )}
-
-                {messageAudience === "all" && (
-                  <p style={{ fontSize: "14px", color: "#475569" }}>
-                    Die Nachricht wird an jeden aktiven Fahrer einzeln zugestellt.
-                  </p>
-                )}
-
-                <label>
-                  Betreff
-                  <input
-                    type="text"
-                    value={messageSubject}
-                    onChange={(event) => setMessageSubject(event.target.value)}
-                    placeholder="Betreff der Nachricht"
-                  />
-                </label>
-
-                <label>
-                  Nachricht
-                  <textarea
-                    value={messageBody}
-                    onChange={(event) => setMessageBody(event.target.value)}
-                    placeholder="Nachricht eingeben"
-                    rows={5}
-                  />
-                </label>
-                <label>
-                  Anhang (optional)
-                  <input type="file" onChange={(event) => setMessageAttachment(event.target.files?.[0] || null)} />
-                  {messageAttachment && <small>{messageAttachment.name} – Upload-Verknüpfung kann nach Storage-Einrichtung ergänzt werden.</small>}
-                </label>
-
-                <button
-                  type="button"
-                  onClick={sendDriverMessage}
-                  disabled={messageSaving || (messageAudience === "single" && !messageRecipientId)}
-                >
-                  {messageSaving ? "Wird gesendet..." : "Nachricht senden"}
-                </button>
-                </div>
-              )}
-
-              <div
-                style={{
-                  display: "flex",
-                  justifyContent: "space-between",
-                  alignItems: "center",
-                  gap: "12px",
-                  flexWrap: "wrap",
-                }}
-              >
-                <h3>
-                  {messageFolder === "sent"
-                    ? "Gesendet"
-                    : messageFolder === "compose"
-                      ? "Nachrichten"
-                      : "Posteingang"}
-                </h3>
-                <button type="button" onClick={loadDriverMessages} disabled={messageLoading}>
-                  {messageLoading ? "Wird geladen..." : "Aktualisieren"}
-                </button>
-              </div>
-
-              {messageFolder === "inbox" && unreadMessageCount > 0 && (
-                <button type="button" onClick={markAllDriverMessagesAsRead}>
-                  Alle als gelesen markieren
-                </button>
-              )}
-
-              {messageLoading && <p>Nachrichten werden geladen...</p>}
-
-              {!messageLoading && visibleMessages.length === 0 && (
-                <p>Keine Nachrichten vorhanden.</p>
-              )}
-
-              {!messageLoading && visibleMessages.length > 0 && (
-                <div
-                  style={{
-                    display: "grid",
-                    gridTemplateColumns: "minmax(220px, 0.9fr) minmax(280px, 1.4fr)",
-                    gap: "16px",
-                    alignItems: "start",
-                  }}
-                >
-                  <div>
-                    {visibleMessages.map((message) => (
-                      <button
-                        key={message.id}
-                        type="button"
-                        onClick={() => {
-                          setSelectedMessageId(message.id)
-                          if (
-                            messageFolder === "inbox" &&
-                            !message.gelesen &&
-                            message.empfaenger_id === currentUser?.id
-                          ) {
-                            markDriverMessageAsRead(message.id)
-                          }
-                        }}
-                        style={{
-                          width: "100%",
-                          textAlign: "left",
-                          padding: "12px",
-                          marginBottom: "8px",
-                          borderRadius: "10px",
-                          border: selectedMessageId === message.id
-                            ? "2px solid #2563eb"
-                            : "1px solid #d1d5db",
-                          background: message.gelesen ? "#ffffff" : "#eff6ff",
-                          cursor: "pointer",
-                        }}
-                      >
-                        <div style={{ display: "flex", justifyContent: "space-between", gap: "8px" }}>
-                          <strong>{message.betreff}</strong>
-                          {messageFolder === "inbox" && !message.gelesen && (
-                            <span aria-label="Ungelesen">●</span>
-                          )}
-                        </div>
-                        <div style={{ fontSize: "13px", marginTop: "5px" }}>
-                          {new Date(message.erstellt_am).toLocaleString("de-DE")}
-                        </div>
-                        <div
-                          style={{
-                            fontSize: "13px",
-                            marginTop: "5px",
-                            fontWeight:
-                              messageFolder === "inbox" && !message.gelesen
-                                ? "bold"
-                                : "normal",
-                          }}
-                        >
-                          {messageFolder === "sent" ? "Gesendet" : "Eingang"}
-                        </div>
-                      </button>
-                    ))}
-                  </div>
-
-                  <div className="card" style={{ minHeight: "220px", margin: 0 }}>
-                    {(() => {
-                      const selectedMessage =
-                        visibleMessages.find((message) => message.id === selectedMessageId) ||
-                        visibleMessages[0]
-
-                      if (!selectedMessage) {
-                        return <p>Wähle eine Nachricht aus.</p>
-                      }
-
-                      return (
-                        <>
-                          <div
-                            style={{
-                              display: "flex",
-                              justifyContent: "space-between",
-                              gap: "12px",
-                              flexWrap: "wrap",
-                            }}
-                          >
-                            <h3 style={{ marginTop: 0 }}>{selectedMessage.betreff}</h3>
-                            <span style={{ fontSize: "13px" }}>
-                              {new Date(selectedMessage.erstellt_am).toLocaleString("de-DE")}
-                            </span>
-                          </div>
-                          <p style={{ fontSize: "13px", color: "#475569" }}>
-                            {messageFolder === "sent"
-                              ? "Gesendete Nachricht"
-                              : "Eingegangene Nachricht"}
-                          </p>
-                          <div
-                            style={{
-                              whiteSpace: "pre-wrap",
-                              lineHeight: 1.6,
-                              borderTop: "1px solid #e5e7eb",
-                              paddingTop: "14px",
-                            }}
-                          >
-                            {selectedMessage.nachricht}
-                          </div>
-                          {messageFolder === "inbox" &&
-                            !selectedMessage.gelesen &&
-                            selectedMessage.empfaenger_id === currentUser?.id && (
-                              <button
-                                type="button"
-                                onClick={() => markDriverMessageAsRead(selectedMessage.id)}
-                                style={{ marginTop: "18px" }}
-                              >
-                                Als gelesen markieren
-                              </button>
-                            )}
-                          <div style={{ display: "flex", gap: "8px", flexWrap: "wrap", marginTop: "18px" }}>
-                            {messageFolder === "inbox" && (
-                              <button type="button" onClick={() => startReply(selectedMessage)}>↩️ Antworten</button>
-                            )}
-                            <button type="button" onClick={() => archiveDriverMessage(selectedMessage.id)}>🗃️ Archivieren</button>
-                            <button type="button" onClick={() => deleteDriverMessage(selectedMessage.id)}>🗑️ Löschen</button>
-                          </div>
-                        </>
-                      )
-                    })()}
-                  </div>
-                </div>
-              )}
-            </div>
-          </section>
-        )}
 
         {/* =================================================
             MEINE TOUREN
@@ -9997,50 +10004,90 @@ function App() {
 
               {!tourLoading && tours.length > 0 && (
                 <>
-                  <h3 style={{ marginTop: "20px" }}>Heutige Touren</h3>
+                  <h3 style={{ marginTop: "20px" }}>Tourenplanung – nächste 7 Tage</h3>
+                  <p>
+                    Wähle einen Tag aus, um die dir bereits zugewiesenen Touren
+                    für die nächsten 7 Tage zu sehen.
+                  </p>
 
-                  {driverTodayTours.length === 0 && (
-                    <p>Für heute ist keine Tour zugewiesen.</p>
-                  )}
+                  <div
+                    style={{
+                      display: "grid",
+                      gridTemplateColumns: "repeat(auto-fit, minmax(130px, 1fr))",
+                      gap: "8px",
+                      margin: "14px 0 18px",
+                    }}
+                  >
+                    {Array.from({ length: 7 }, (_, index) => {
+                      const date = addDaysToDateString(today, index)
+                      const dayTours = tours.filter((item) => item.datum === date)
+                      const selected = driverPlanningDate === date
+                      return (
+                        <button
+                          key={date}
+                          type="button"
+                          className={selected ? "primary-button" : "secondary-button"}
+                          onClick={() => setDriverPlanningDate(date)}
+                          style={{ minHeight: "58px", textAlign: "left" }}
+                        >
+                          <strong>{index === 0 ? "Heute" : formatTourDate(date)}</strong>
+                          <span style={{ display: "block", fontSize: "12px", marginTop: "3px", opacity: 0.8 }}>
+                            {dayTours.length} Tour{dayTours.length === 1 ? "" : "en"}
+                          </span>
+                        </button>
+                      )
+                    })}
+                  </div>
 
-                  {driverTodayTours.map((item) => (
-                    <div
-                      key={item.id}
-                      style={{
-                        border: "1px solid #ddd",
-                        borderRadius: "12px",
-                        padding: "16px",
-                        marginTop: "12px",
-                      }}
-                    >
-                      <strong>{item.tournummer}</strong>
-                      <p style={{ margin: "6px 0" }}>
-                        Datum: {formatTourDate(item.datum)}
-                      </p>
-                      <p style={{ margin: "6px 0" }}>
-                        Status: {item.status}
-                      </p>
-                      <p style={{ margin: "6px 0" }}>
-                        Fahrer: {item.fahrer || currentUser.name || currentUser.email}
-                      </p>
-                      <p style={{ margin: "6px 0", fontWeight: 700 }}>
-                        Zustellzeit: {tourNextPlannedTimes[item.id] ? `${tourNextPlannedTimes[item.id]} Uhr` : "Keine offene Zustellung"}
-                      </p>
-                      <button
-                        type="button"
-                        className="primary-button"
-                        onClick={() => {
-                          setSelectedTourId(item.id)
-                          setTour(item)
-                          loadDeliveries(item.id)
-                          setPage("tour")
+                  {(() => {
+                    const plannedTours = tours.filter((item) => item.datum === driverPlanningDate)
+                    if (plannedTours.length === 0) {
+                      return (
+                        <p>
+                          Für {driverPlanningDate === today ? "heute" : formatTourDate(driverPlanningDate)}
+                          {" "}ist keine Tour zugewiesen.
+                        </p>
+                      )
+                    }
+
+                    return plannedTours.map((item) => (
+                      <div
+                        key={item.id}
+                        style={{
+                          border: "1px solid #ddd",
+                          borderRadius: "12px",
+                          padding: "16px",
+                          marginTop: "12px",
                         }}
                       >
-                        Heutige Tour öffnen
-                      </button>
-                    </div>
-                  ))}
-
+                        <strong>{item.tournummer}</strong>
+                        <p style={{ margin: "6px 0" }}>
+                          Datum: {formatTourDate(item.datum)}
+                        </p>
+                        <p style={{ margin: "6px 0" }}>
+                          Status: {item.status}
+                        </p>
+                        <p style={{ margin: "6px 0" }}>
+                          Fahrer: {item.fahrer || currentUser.name || currentUser.email}
+                        </p>
+                        <p style={{ margin: "6px 0", fontWeight: 700 }}>
+                          Zustellzeit: {tourNextPlannedTimes[item.id] ? `${tourNextPlannedTimes[item.id]} Uhr` : "Keine offene Zustellung"}
+                        </p>
+                        <button
+                          type="button"
+                          className="primary-button"
+                          onClick={() => {
+                            setSelectedTourId(item.id)
+                            setTour(item)
+                            loadDeliveries(item.id)
+                            setPage("tour")
+                          }}
+                        >
+                          Tour öffnen
+                        </button>
+                      </div>
+                    ))
+                  })()}
                 </>
               )}
             </div>
@@ -10052,7 +10099,7 @@ function App() {
         ================================================= */}
 
         {page === "dashboard" && (
-          <section className="dashboard-page">
+          <section className={`dashboard-page ${currentUser.rolle === "Fahrer" ? "driver-dashboard" : "admin-dashboard"}`}>
 
             <div
               className="card dashboard-stats-card"
@@ -10387,7 +10434,7 @@ function App() {
               </h2>
             </div>
 
-            <div className="card" style={{ marginTop: "16px" }}>
+            <div className="card dashboard-shift-card" style={{ marginTop: "16px" }}>
                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: "12px", flexWrap: "wrap" }}>
                   <div>
                     <h2 style={{ marginBottom: "4px" }}>
@@ -10826,7 +10873,7 @@ function App() {
             </div>
 
             {currentUser.rolle === "Fahrer" && (
-              <div className="card" style={{ marginBottom: "18px" }}>
+              <div className="card dashboard-today-card" style={{ marginBottom: "18px" }}>
                 <h3>Heutige Tour</h3>
                 {driverTodayTours.length === 0 ? (
                   <p>Heute ist noch keine Tour zugewiesen.</p>
@@ -10940,7 +10987,7 @@ function App() {
                     }}
                   >
                     <strong>{item.label}</strong>
-                    <div style={{ display: "flex", gap: 10, marginTop: 10, flexWrap: "wrap" }}>
+                    <div className="vehicle-check-actions" style={{ display: "flex", gap: 10, marginTop: 10, flexWrap: "wrap" }}>
                       <button
                         type="button"
                         className={`vehicle-check-choice ${value === "ok" ? "is-selected is-ok" : ""}`} 
@@ -11001,6 +11048,60 @@ function App() {
                   ? "Fahrzeugcheck bestanden speichern"
                   : "Fahrzeugcheck mit Mängeln speichern"}
               </button>
+
+              {vehicleCheckVehicle && (
+                <div className="card vehicle-weekly-check" style={{ marginTop: 18, padding: 16 }}>
+                  <div className="vehicle-weekly-check-header">
+                    <div>
+                      <h3 style={{ margin: 0 }}>📅 Wöchentlicher Fahrzeug- & Unterlagencheck</h3>
+                      <p style={{ margin: "5px 0 0" }}>
+                        Einmal pro Woche kontrollieren: Technik, Flüssigkeiten und die Unterlagen des Fahrzeugs.
+                      </p>
+                    </div>
+                    <span className={`status-badge ${weeklyVehicleCheckComplete ? "success" : ""}`}>
+                      {weeklyVehicleCheckComplete ? "✓ Woche erledigt" : "Offen"}
+                    </span>
+                  </div>
+
+                  <div className="vehicle-weekly-grid">
+                    {weeklyVehicleCheckItems.map((item) => (
+                      <label key={String(item.key)} className={`vehicle-weekly-item ${weeklyVehicleCheck[item.key] ? "is-complete" : ""}`}>
+                        <input
+                          type="checkbox"
+                          checked={weeklyVehicleCheck[item.key] === true}
+                          onChange={(e) => updateWeeklyVehicleCheck(item.key, e.target.checked)}
+                        />
+                        <span className="vehicle-weekly-icon">{item.icon}</span>
+                        <span>{item.label}</span>
+                      </label>
+                    ))}
+                  </div>
+
+                  <label style={{ marginTop: 12 }}>Bemerkung zur Woche
+                    <textarea
+                      rows={2}
+                      value={weeklyVehicleCheck.bemerkung}
+                      onChange={(e) => updateWeeklyVehicleCheck("bemerkung", e.target.value)}
+                      placeholder="z. B. Reifendruck angepasst, AdBlue aufgefüllt, Unterlagen vollständig …"
+                    />
+                  </label>
+
+                  <div className="vehicle-weekly-footer">
+                    <div>
+                      <strong>Woche ab {new Date(weeklyVehicleCheck.week).toLocaleDateString("de-DE")}</strong>
+                      {weeklyVehicleCheck.erledigtAm && (
+                        <div className="success">Erledigt am {new Date(weeklyVehicleCheck.erledigtAm).toLocaleString("de-DE")} · {weeklyVehicleCheck.erledigtVon}</div>
+                      )}
+                    </div>
+                    <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                      <button type="button" className="secondary-button" onClick={() => navigateTo("documents")}>📁 Unterlagen öffnen</button>
+                      <button type="button" className="primary-button" onClick={markWeeklyVehicleCheckComplete} disabled={!weeklyVehicleCheckComplete}>
+                        {weeklyVehicleCheckComplete ? "✓ Wochencheck bestätigen" : "Noch nicht vollständig"}
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              )}
 
               {!allChecksCompleted && vehicleCheckVehicle && (
                 <p className="warning">
@@ -11688,6 +11789,19 @@ function App() {
                       </div>
                     )}
 
+
+                  {currentUser?.rolle === "Fahrer" &&
+                    ["Unterwegs", "Beim Kunden", "Erledigt"].includes(delivery.status) && (
+                      <button
+                        type="button"
+                        className="secondary-button"
+                        style={{ marginTop: "10px" }}
+                        onClick={() => void goToPreviousDeliveryStep(delivery.id)}
+                      >
+                        ← Vorherigen Schritt bearbeiten
+                      </button>
+                    )}
+
                   {(deliveryDocuments[delivery.id] || []).length > 0 && (
                     <div
                       className="note-section"
@@ -12103,7 +12217,7 @@ function App() {
             KUNDENVERWALTUNG
         ================================================= */}
 
-        {page === "acquisition" && (() => {
+        {page === "acquisition" && canViewAcquisition && (() => {
           const filteredAcquisitions = acquisitionRows.filter((row) =>
             `${row.firma} ${row.ort || ""} ${row.ansprechpartner_name || ""} ${row.status || ""}`
               .toLowerCase()
@@ -12248,8 +12362,42 @@ function App() {
               <div style={{ marginBottom: "12px", color: "#64748b", fontSize: "13px", fontWeight: 700 }}>
                 Ziehe eine Firmenkarte mit der Maus in den gewünschten Ordner. Der neue Ordner wird automatisch gespeichert.
               </div>
-              <div className="acquisition-kanban">
-                {["Nicht zugeordnet", ...acquisitionFolders].map((folder) => {
+              <div className="acquisition-workspace">
+                <aside className="acquisition-folder-sidebar" aria-label="Akquise-Ordner">
+                  <div className="acquisition-sidebar-title">ORDNER</div>
+                  {["Alle Firmen", "Nicht zugeordnet", ...acquisitionFolders].map((folder) => {
+                    const count = filteredAcquisitions.filter((row) => {
+                      const normalized = getAcquisitionFolder(row.status)
+                      if (folder === "Alle Firmen") return true
+                      if (folder === "Nicht zugeordnet") return !normalized || !acquisitionFolders.includes(normalized)
+                      return normalized === folder
+                    }).length
+                    return (
+                      <button
+                        key={folder}
+                        type="button"
+                        className={`acquisition-sidebar-folder${selectedAcquisitionFolder === folder ? " is-active" : ""}${acquisitionDropTarget === folder ? " is-drop-target" : ""}`}
+                        onClick={() => setSelectedAcquisitionFolder(folder)}
+                        onDragOver={(event) => handleAcquisitionDragOver(event, folder)}
+                        onDrop={(event) => moveAcquisitionToFolder(event, folder)}
+                        title={folder}
+                      >
+                        <span className="acquisition-sidebar-folder-icon">{folder === "Alle Firmen" ? "▦" : "▰"}</span>
+                        <span className="acquisition-sidebar-folder-name">{folder}</span>
+                        <span className="acquisition-sidebar-count">{count}</span>
+                      </button>
+                    )
+                  })}
+                  <button
+                    type="button"
+                    className="acquisition-sidebar-add"
+                    onClick={() => addAcquisitionFolder(window.prompt("Wie soll der neue Ordner heißen?") || "")}
+                  >＋ Neuer Ordner</button>
+                </aside>
+                <div className="acquisition-kanban">
+                {(selectedAcquisitionFolder === "Alle Firmen"
+                  ? ["Nicht zugeordnet", ...acquisitionFolders]
+                  : [selectedAcquisitionFolder]).map((folder) => {
                   const folderRows = filteredAcquisitions.filter((row) => {
                     const normalized = getAcquisitionFolder(row.status)
                     return folder === "Nicht zugeordnet"
@@ -12374,6 +12522,7 @@ function App() {
                     </div>
                   )
                 })}
+                </div>
               </div>
 
               {selectedAcquisition && (
@@ -12419,7 +12568,7 @@ function App() {
           )
         })()}
 
-        {page === "customers" && (
+        {page === "customers" && canViewCustomers && (
           <section>
             <div className="card">
               <div className="delivery-header">
@@ -12936,6 +13085,14 @@ function App() {
 
                     </div>
 
+                    <div className="tracking-settings">
+                      <h4>📧 Kunden-Tracking (optional)</h4>
+                      <div className="form-group"><label>Separate Empfänger-E-Mail</label><input type="email" value={delivery.trackingEmail} onChange={(event) => updateNewDelivery(index, "trackingEmail", event.target.value)} placeholder="empfaenger@beispiel.de" /></div>
+                      <label className="tracking-toggle"><input type="checkbox" checked={delivery.trackingNotifications} onChange={(event) => updateNewDelivery(index, "trackingNotifications", event.target.checked)} /> Kunde wünscht Tracking-Benachrichtigungen</label>
+                      {delivery.trackingNotifications && <div className="tracking-options"><label className="tracking-toggle"><input type="checkbox" checked={delivery.trackingPickup} onChange={(event) => updateNewDelivery(index, "trackingPickup", event.target.checked)} /> Bei Abholung informieren</label><label className="tracking-toggle"><input type="checkbox" checked={delivery.trackingDelivery} onChange={(event) => updateNewDelivery(index, "trackingDelivery", event.target.checked)} /> Bei Zustellung informieren</label></div>}
+                      {!delivery.trackingNotifications && <small>Standardmäßig aus. Es werden keine Tracking-Mails versendet.</small>}
+                    </div>
+
                     <div className="form-group">
                       <label>Kundenwunsch / Notiz für diese Tour</label>
                       <textarea
@@ -13339,6 +13496,13 @@ function App() {
                                 <div className="form-group"><label>Adresse</label><input value={editingDeliveryAddress} onChange={(e)=>setEditingDeliveryAddress(e.target.value)} /></div>
                                 <div className="form-group"><label>Zustellzeit</label><input type="time" value={editingDeliveryTime} onChange={(e)=>setEditingDeliveryTime(e.target.value)} /></div>
                                 <div className="form-group"><label>Vom Kunden bezahlt (€)</label><input inputMode="decimal" value={editingDeliveryAmount} onChange={(e)=>setEditingDeliveryAmount(e.target.value)} placeholder="z. B. 125,00" /></div>
+                              </div>
+                              <div className="tracking-settings">
+                                <h4>📧 Kunden-Tracking (optional)</h4>
+                                <div className="form-group"><label>Separate Empfänger-E-Mail</label><input type="email" value={editingTrackingEmail} onChange={(e)=>setEditingTrackingEmail(e.target.value)} placeholder="empfaenger@beispiel.de" /></div>
+                                <label className="tracking-toggle"><input type="checkbox" checked={editingTrackingNotifications} onChange={(e)=>setEditingTrackingNotifications(e.target.checked)} /> Kunde wünscht Tracking-Benachrichtigungen</label>
+                                {editingTrackingNotifications && <div className="tracking-options"><label className="tracking-toggle"><input type="checkbox" checked={editingTrackingPickup} onChange={(e)=>setEditingTrackingPickup(e.target.checked)} /> Bei Abholung informieren</label><label className="tracking-toggle"><input type="checkbox" checked={editingTrackingDelivery} onChange={(e)=>setEditingTrackingDelivery(e.target.checked)} /> Bei Zustellung informieren</label></div>}
+                                {!editingTrackingNotifications && <small>Standardmäßig aus. Es werden keine Tracking-Mails versendet.</small>}
                               </div>
                               <div
                                 style={{
@@ -13785,7 +13949,7 @@ function App() {
           </section>
         )}
 
-        {page === "work-time" && hasPermission("fahrer") && (
+        {page === "work-time" && canViewWorkTime && (
           <section>
             <div className="card"><h2>Arbeitszeit & Kilometer</h2><p>Arbeitszeiten und gefahrene Kilometer pro Fahrer erfassen.</p>{workMessage&&<div className="success-message">{workMessage}</div>}
               <div style={{display:"grid",gap:"10px",gridTemplateColumns:"repeat(auto-fit,minmax(180px,1fr))"}}>
@@ -14005,7 +14169,26 @@ function App() {
 
         {page === "finance" && canViewFinance && (
           <section>
-            <div className="card">
+            <div className="card finance-section-header">
+              <div>
+                <h2 style={{ marginBottom: "4px" }}>
+                  {financeSection === "finanzen" ? "💳 Finanzen" : financeSection === "kalkulation" ? "🧮 Kalkulation" : "🎯 Ziele"}
+                </h2>
+                <p style={{ margin: 0 }}>
+                  {financeSection === "finanzen"
+                    ? "Einnahmen, Ausgaben und automatische Kosten im Überblick."
+                    : financeSection === "kalkulation"
+                      ? "Touren und Kosten vorab kalkulieren."
+                      : "Monatliche Umsatz-, Gewinn- und Akquiseziele verfolgen."}
+                </p>
+              </div>
+              <div style={{ display: "flex", gap: "8px", flexWrap: "wrap" }}>
+                <button type="button" className={financeSection === "finanzen" ? "primary-button" : "secondary-button"} onClick={() => setFinanceSection("finanzen")}>💳 Finanzen</button>
+                <button type="button" className={financeSection === "kalkulation" ? "primary-button" : "secondary-button"} onClick={() => setFinanceSection("kalkulation")}>🧮 Kalkulation</button>
+                <button type="button" className={financeSection === "ziele" ? "primary-button" : "secondary-button"} onClick={() => setFinanceSection("ziele")}>🎯 Ziele</button>
+              </div>
+            </div>
+            <div className="card" style={{ display: financeSection === "finanzen" ? "block" : "none" }}>
               <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",gap:"12px",flexWrap:"wrap"}}>
                 <div><h2>💶 Finanzen & Kalkulation</h2><p style={{marginBottom:0}}>Monatlichen Gewinn im Blick behalten und einzelne Touren vorab kalkulieren.</p></div>
                 <label style={{minWidth:"170px"}}>Monat<input type="month" value={financeMonth} onChange={(e) => setFinanceMonth(e.target.value)} onBlur={() => void loadFinanceRows()} /></label>
@@ -14030,7 +14213,7 @@ function App() {
                 {financeMessage && <p className="info-message">{financeMessage}</p>}
               </div>
             </div>
-            <div className="card">
+            <div className="card" style={{ display: financeSection === "ziele" ? "block" : "none" }}>
               <h3>📊 Unternehmens-Cockpit & Ziele</h3>
               <p style={{marginTop:0}}>Bezahlte Einnahmen, offene Rechnungsbeträge und geplante Fixkosten werden getrennt sichtbar.</p>
               <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(170px,1fr))",gap:"10px"}}>
@@ -14062,7 +14245,7 @@ function App() {
               <button type="button" className="primary-button" onClick={() => void savePlannedCost()}>Monatliche Kosten anlegen</button>
               {plannedCosts.length > 0 && <div style={{marginTop:"12px"}}>{plannedCosts.map((cost) => <div key={cost.id} style={{display:"flex",justifyContent:"space-between",gap:"8px",padding:"8px 0",borderBottom:"1px solid #e2e8f0"}}><span><strong>{cost.name}</strong><br/><small>{cost.category} · am {cost.day}. · {euro(cost.amount)}/Monat</small></span><button type="button" className="secondary-button" onClick={() => setPlannedCosts((items) => items.filter((item) => item.id !== cost.id))}>Entfernen</button></div>)}</div>}
             </div>
-            <div className="card">
+            <div className="card" style={{ display: financeSection === "kalkulation" ? "block" : "none" }}>
               <h3>🧮 Tour-Kalkulator</h3><p>Geplante Werte eingeben: Kraftstoff, Fahrerlohn, Gesamtkosten und Deckungsbeitrag werden automatisch berechnet.</p>
               <div className="form-grid">
                 <label>Umsatz in €<input type="number" min="0" step="0.01" value={financeCalc.umsatz} onChange={(e) => setFinanceCalc({...financeCalc, umsatz:e.target.value})}/></label>
@@ -14094,6 +14277,7 @@ function App() {
                 <div>
                   <h2>📊 Auswertung</h2>
                   <p style={{marginBottom:0}}>Touren, Lieferungen, Kilometer und Arbeitszeit im gewählten Zeitraum.</p>
+                  {currentUser?.rolle === "Fahrer" && <p style={{marginTop:"6px",marginBottom:0,color:"#475569"}}>Du siehst hier ausschließlich deine eigenen Arbeitszeiten, Schichten und Touren.</p>}
                 </div>
                 <button type="button" className="secondary-button" onClick={loadReportData} disabled={reportLoading}>
                   {reportLoading ? "Wird geladen…" : "↻ Aktualisieren"}
@@ -14103,7 +14287,7 @@ function App() {
               <div style={{display:"grid",gap:"10px",gridTemplateColumns:"repeat(auto-fit,minmax(180px,1fr))",marginTop:"16px"}}>
                 <label>Von<input type="date" value={reportStart} onChange={e=>setReportStart(e.target.value)}/></label>
                 <label>Bis<input type="date" value={reportEnd} onChange={e=>setReportEnd(e.target.value)}/></label>
-                {canManageTours && <label>Mitarbeiter<select value={reportDriverId} onChange={e=>setReportDriverId(e.target.value)}><option value="">Alle Fahrer</option>{driverProfiles.filter(d=>d.aktiv).map(d=><option key={d.id} value={d.id}>{d.name||d.email}</option>)}</select></label>}
+                {currentUser?.rolle !== "Fahrer" && canManageTours && <label>Mitarbeiter<select value={reportDriverId} onChange={e=>setReportDriverId(e.target.value)}><option value="">Alle Fahrer</option>{driverProfiles.filter(d=>d.aktiv).map(d=><option key={d.id} value={d.id}>{d.name||d.email}</option>)}</select></label>}
               </div>
               <div style={{display:"flex",gap:"8px",flexWrap:"wrap",marginTop:"12px"}}>
                 <button type="button" className="primary-button" onClick={loadReportData}>Auswertung laden</button>
@@ -14437,13 +14621,13 @@ function App() {
                   <div className="card" style={{ marginTop: "14px" }}>
                     <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: "10px", flexWrap: "wrap" }}>
                       <h3 style={{ margin: 0 }}>🔧 Wartungshistorie</h3>
-                      <button type="button" className="secondary-button" onClick={() => { closeFleetDetail(); openMaintenance(fleetDetailVehicle) }}>＋ Wartung eintragen</button>
+                      <button type="button" className="secondary-button" onClick={() => { closeFleetDetail(); openMaintenance(fleetDetailVehicle) }}>＋ Wartung planen</button>
                     </div>
                     {fleetDetailVehicle.maintenanceHistory.length === 0 ? <p>Noch keine Wartungen gespeichert.</p> : (
                       fleetDetailVehicle.maintenanceHistory.map((m) => (
                         <div key={m.id} style={{ borderTop: "1px solid #e5e7eb", padding: "12px 0", display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(150px,1fr))", gap: "8px" }}>
-                          <div><strong>{m.wartungsart}</strong><div>{formatCheckDate(m.datum)}</div></div>
-                          <div><strong>Kilometer</strong><div>{m.kilometerstand != null ? `${m.kilometerstand.toLocaleString("de-DE")} km` : "—"}</div></div>
+                          <div><strong>{m.wartungsart}</strong><div>{String(m.status || "Offen") === "Erledigt" ? `Durchgeführt: ${formatCheckDate(m.datum)}` : `Fällig: ${formatCheckDate(m.datum)}`}</div></div>
+                          <div><strong>{String(m.status || "Offen") === "Erledigt" ? "Kilometer bei Durchführung" : "Fällig bei Kilometer"}</strong><div>{m.kilometerstand != null ? `${m.kilometerstand.toLocaleString("de-DE")} km` : "—"}</div></div>
                           <div><strong>Kosten</strong><div>{String(m.status || "Offen") === "Erledigt" ? (Number(m.tatsaechliche_kosten) || 0).toLocaleString("de-DE",{style:"currency",currency:"EUR"}) : (Number(m.kosten) || 0).toLocaleString("de-DE",{style:"currency",currency:"EUR"})}</div></div>
                           <div><strong>Nächster Termin</strong><div>{m.naechste_wartung_datum ? formatCheckDate(m.naechste_wartung_datum) : "—"}{m.naechste_wartung_km != null ? ` · ${m.naechste_wartung_km.toLocaleString("de-DE")} km` : ""}</div></div>
                           <div><strong>Notiz</strong><div>{m.notiz || "—"}</div></div>
@@ -14456,6 +14640,14 @@ function App() {
                                 onClick={() => openMaintenanceEdit(m)}
                               >
                                 ✏️ Bearbeiten
+                              </button>
+                              <button
+                                type="button"
+                                className="secondary-button"
+                                style={{ color: "#b42318", borderColor: "#f2b8b5" }}
+                                onClick={() => deleteMaintenance(m)}
+                              >
+                                🗑️ Löschen
                               </button>
                               {String(m.status || "Offen") !== "Erledigt" ? (
                                 <button
@@ -14504,17 +14696,14 @@ function App() {
           <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.5)", display: "flex", alignItems: "center", justifyContent: "center", padding: "20px", zIndex: 1100 }}>
             <div className="card" style={{ width: "100%", maxWidth: "460px" }}>
               <h2 style={{ marginTop: 0, marginBottom: "8px" }}>Wartung abschließen</h2>
-              <p style={{ marginTop: 0, color: "#6b7280" }}>Bitte gib die tatsächlich bezahlten Kosten ein. Die geplanten Kosten bleiben nur für die offene Wartung gespeichert.</p>
-              <label htmlFor="maintenance-actual-cost">Tatsächliche Kosten (€)</label>
-              <input
-                id="maintenance-actual-cost"
-                type="text"
-                inputMode="decimal"
-                autoFocus
-                value={maintenanceActualCost}
-                onChange={(e) => setMaintenanceActualCost(e.target.value)}
-                placeholder="z. B. 327,50"
-              />
+              <p style={{ marginTop: 0, color: "#6b7280" }}>Hier wird die tatsächliche Durchführung dokumentiert. Danach gilt die geplante Wartung als erledigt und die tatsächlichen Kosten werden automatisch als Ausgabe in Finanzen verbucht.</p>
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(190px,1fr))", gap: "12px" }}>
+                <div><label htmlFor="maintenance-completion-date">Durchgeführt am</label><input id="maintenance-completion-date" type="date" value={maintenanceCompletionDate} onChange={(e) => setMaintenanceCompletionDate(e.target.value)} /></div>
+                <div><label htmlFor="maintenance-completion-km">Kilometerstand bei Durchführung</label><input id="maintenance-completion-km" type="text" inputMode="numeric" value={maintenanceCompletionKm} onChange={(e) => setMaintenanceCompletionKm(e.target.value)} placeholder="z. B. 99800" /></div>
+                <div><label htmlFor="maintenance-actual-cost">Tatsächliche Kosten (€)</label><input id="maintenance-actual-cost" type="text" inputMode="decimal" autoFocus value={maintenanceActualCost} onChange={(e) => setMaintenanceActualCost(e.target.value)} placeholder="z. B. 327,50" /></div>
+                <div><label htmlFor="maintenance-next-date">Nächste Wartung am</label><input id="maintenance-next-date" type="date" value={nextMaintenanceDate} onChange={(e) => setNextMaintenanceDate(e.target.value)} /></div>
+                <div><label htmlFor="maintenance-next-km">Nächste Wartung bei km</label><input id="maintenance-next-km" type="text" inputMode="numeric" value={nextMaintenanceKm} onChange={(e) => setNextMaintenanceKm(e.target.value)} placeholder="z. B. 109800" /></div>
+              </div>
               <div style={{ display: "flex", gap: "10px", justifyContent: "flex-end", marginTop: "18px", flexWrap: "wrap" }}>
                 <button type="button" className="secondary-button" onClick={closeMaintenanceCompletion} disabled={maintenanceCompletionSaving}>Abbrechen</button>
                 <button type="button" className="primary-button" onClick={completeMaintenance} disabled={maintenanceCompletionSaving}>
@@ -14537,15 +14726,19 @@ function App() {
               </div>
 
               <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: "14px", marginTop: "20px" }}>
-                <div><label htmlFor="maintenance-date">Wartungsdatum</label><input id="maintenance-date" type="date" value={maintenanceDate} onChange={(e) => setMaintenanceDate(e.target.value)} /></div>
-                <div><label htmlFor="maintenance-km">Kilometerstand</label><input id="maintenance-km" type="text" inputMode="numeric" value={maintenanceKm} onChange={(e) => setMaintenanceKm(e.target.value)} placeholder="z. B. 82500" /></div>
+                <div><label htmlFor="maintenance-date">{maintenanceEditId != null && maintenanceEditStatus === "Erledigt" ? "Durchgeführt am" : "Fälligkeitsdatum"}</label><input id="maintenance-date" type="date" value={maintenanceDate} onChange={(e) => setMaintenanceDate(e.target.value)} /></div>
+                <div><label htmlFor="maintenance-km">{maintenanceEditId != null && maintenanceEditStatus === "Erledigt" ? "Kilometerstand bei Durchführung" : "Fällig bei Kilometer"}</label><input id="maintenance-km" type="text" inputMode="numeric" value={maintenanceKm} onChange={(e) => setMaintenanceKm(e.target.value)} placeholder="z. B. 82500" /></div>
                 <div><label htmlFor="maintenance-type">Wartungsart</label><select id="maintenance-type" value={maintenanceType} onChange={(e) => setMaintenanceType(e.target.value)}><option>Inspektion</option><option>Ölwechsel</option><option>Reifen</option><option>Bremsen</option><option>HU/AU</option><option>Reparatur</option><option>Sonstiges</option></select></div>
                 <div><label htmlFor="maintenance-cost">Geplante Kosten (€)</label><input id="maintenance-cost" type="text" inputMode="decimal" value={maintenanceCost} onChange={(e) => setMaintenanceCost(e.target.value)} placeholder="z. B. 350" /></div>
                 {maintenanceEditId != null && maintenanceEditStatus === "Erledigt" && (
                   <div><label htmlFor="maintenance-edit-actual-cost">Tatsächliche Kosten (€)</label><input id="maintenance-edit-actual-cost" type="text" inputMode="decimal" value={maintenanceEditActualCost} onChange={(e) => setMaintenanceEditActualCost(e.target.value)} placeholder="z. B. 327,50" /></div>
                 )}
-                <div><label htmlFor="next-maintenance-km">Nächste Wartung bei km</label><input id="next-maintenance-km" type="text" inputMode="numeric" value={nextMaintenanceKm} onChange={(e) => setNextMaintenanceKm(e.target.value)} placeholder="z. B. 92500" /></div>
-                <div><label htmlFor="next-maintenance-date">Nächster Wartungstermin</label><input id="next-maintenance-date" type="date" value={nextMaintenanceDate} onChange={(e) => setNextMaintenanceDate(e.target.value)} /></div>
+                {maintenanceEditId != null && maintenanceEditStatus === "Erledigt" && (
+                  <>
+                    <div><label htmlFor="next-maintenance-km">Nächste Wartung bei km</label><input id="next-maintenance-km" type="text" inputMode="numeric" value={nextMaintenanceKm} onChange={(e) => setNextMaintenanceKm(e.target.value)} placeholder="z. B. 109800" /></div>
+                    <div><label htmlFor="next-maintenance-date">Nächster Wartungstermin</label><input id="next-maintenance-date" type="date" value={nextMaintenanceDate} onChange={(e) => setNextMaintenanceDate(e.target.value)} /></div>
+                  </>
+                )}
               </div>
               <div style={{ marginTop: "14px" }}><label htmlFor="maintenance-note">Notiz</label><textarea id="maintenance-note" value={maintenanceNote} onChange={(e) => setMaintenanceNote(e.target.value)} rows={4} placeholder="z. B. Öl, Filter und Bremsen geprüft" /></div>
               <p style={{ marginTop: "12px", marginBottom: 0, color: "#6b7280" }}>
@@ -14553,7 +14746,7 @@ function App() {
                   ? maintenanceEditStatus === "Erledigt"
                     ? "Du kannst die Wartungsdaten und die tatsächlichen Kosten nachträglich ändern."
                     : "Du kannst die offene Wartung nachträglich ändern. Zum Abschließen wird separat nach den tatsächlichen Kosten gefragt."
-                  : "Die Wartung wird zunächst als offen gespeichert. Nach Durchführung kannst du sie in der Wartungshistorie als erledigt markieren."}
+                  : "Die Wartung wird zunächst als geplant/offen gespeichert. Beim Abschluss werden tatsächliches Datum, Kilometerstand und tatsächliche Kosten erfasst und die Ausgabe automatisch in Finanzen verbucht."}
               </p>
               {maintenanceMessage && <p className={maintenanceMessage.startsWith("✓") ? "success" : "warning"} style={{ marginTop: "16px" }}>{maintenanceMessage}</p>}
               <div style={{ display: "flex", gap: "10px", justifyContent: "flex-end", marginTop: "18px", flexWrap: "wrap" }}>
@@ -14677,6 +14870,20 @@ function App() {
                 >
                   {usersLoading ? "Aktualisiere..." : "↻ Aktualisieren"}
                 </button>
+              </div>
+
+              <div style={{ marginTop: "16px", padding: "14px", border: "1px solid #d1d5db", borderRadius: "10px" }}>
+                <h3 style={{ marginTop: 0 }}>Tracking-E-Mail: Verbindungstest</h3>
+                <p>Prüft nur, ob die Edge Function erreichbar ist. Dieser Test versendet keine E-Mail und verändert keine Lieferungsdaten.</p>
+                <button
+                  type="button"
+                  className="secondary-button"
+                  onClick={testTrackingFunction}
+                  disabled={trackingTestLoading}
+                >
+                  {trackingTestLoading ? "Teste Verbindung..." : "Tracking-Funktion testen"}
+                </button>
+                {trackingTestMessage && <p role="status" style={{ marginBottom: 0 }}>{trackingTestMessage}</p>}
               </div>
 
               {usersError && (
@@ -14913,7 +15120,7 @@ function App() {
           </section>
         )}
 
-        {page === "sops" && (
+        {page === "sops" && canViewSops && (
           <section>
             <div className="card">
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: "12px", flexWrap: "wrap" }}>
@@ -15316,6 +15523,80 @@ function App() {
 
     </div>
   )
+}
+
+
+type PublicTrackingResult = {
+  status: string | null
+  plannedTime: string | null
+  pickupStatus: string | null
+}
+
+function PublicTrackingPage() {
+  const [result, setResult] = useState<PublicTrackingResult | null>(null)
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState("")
+
+  useEffect(() => {
+    let cancelled = false
+    const token = new URLSearchParams(window.location.search).get("token")
+    if (!token || !/^[0-9a-f-]{36}$/i.test(token)) {
+      setError("Der Tracking-Link ist ungültig oder unvollständig.")
+      setLoading(false)
+      return
+    }
+    supabase.functions.invoke("get-public-tracking", { body: { token } })
+      .then(({ data, error: invokeError }) => {
+        if (cancelled) return
+        if (invokeError || !data?.ok || !data?.tracking) {
+          setError("Für diesen Tracking-Link konnten keine Sendungsdaten gefunden werden.")
+        } else {
+          setResult(data.tracking as PublicTrackingResult)
+        }
+      })
+      .catch(() => {
+        if (!cancelled) setError("Die Sendungsdaten konnten gerade nicht geladen werden. Bitte versuchen Sie es später erneut.")
+      })
+      .finally(() => { if (!cancelled) setLoading(false) })
+    return () => { cancelled = true }
+  }, [])
+
+  const status = (result?.status || "Offen").trim()
+  const completed = status.toLowerCase() === "erledigt"
+  const steps = ["Offen", "Unterwegs", "Beim Kunden", "Erledigt"]
+  const currentStep = steps.findIndex((step) => step.toLowerCase() === status.toLowerCase())
+
+  return (
+    <main className="public-tracking-page">
+      <section className="public-tracking-card" aria-live="polite">
+        <div className="public-tracking-brand">uzemmi · TransportApp</div>
+        <h1>Sendungsverfolgung</h1>
+        {loading ? <p className="public-tracking-muted">Sendungsstatus wird geladen …</p> : error ? (
+          <div className="public-tracking-error"><strong>Tracking nicht verfügbar</strong><p>{error}</p></div>
+        ) : result ? (
+          <>
+            <p className="public-tracking-muted">Aktueller Sendungsstatus</p>
+            <div className={`public-tracking-status ${completed ? "is-complete" : ""}`}>{status}</div>
+            <ol className="public-tracking-steps">
+              {steps.map((step, index) => (
+                <li key={step} className={index <= currentStep ? "is-reached" : ""}>
+                  <span className="public-tracking-step-dot" />
+                  <span>{step}</span>
+                </li>
+              ))}
+            </ol>
+            {result.plannedTime && <div className="public-tracking-detail"><span>Geplante Zeit</span><strong>{result.plannedTime.slice(0, 5)} Uhr</strong></div>}
+          </>
+        ) : null}
+        <p className="public-tracking-footer">Diese Seite zeigt nur den Status der über diesen persönlichen Link aufgerufenen Sendung.</p>
+      </section>
+    </main>
+  )
+}
+
+function App() {
+  const isPublicTracking = window.location.pathname.replace(/\/+$/, "").toLowerCase() === "/tracking"
+  return isPublicTracking ? <PublicTrackingPage /> : <MainApp />
 }
 
 export default App
