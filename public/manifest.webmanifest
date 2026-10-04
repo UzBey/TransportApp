@@ -1,0 +1,17 @@
+{
+  "id": "/",
+  "name": "UZEMMI",
+  "short_name": "UZEMMI",
+  "description": "Touren, Fahrer und Fahrzeugverwaltung",
+  "lang": "de-DE",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#f5f7f6",
+  "theme_color": "#123c35",
+  "icons": [
+    { "src": "/icons/uzemmi-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "/icons/uzemmi-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" }
+  ]
+}

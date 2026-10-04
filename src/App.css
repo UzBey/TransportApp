@@ -1,3 +1,5 @@
+@import url('https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&display=swap');
+
 /* =====================================================
    TRANSPORTAPP – PHASE 2 UI / UX
    Nur Oberfläche, Farben, Typografie und Struktur.
@@ -4940,7 +4942,6 @@ tbody tr:hover td {
    Palette: Ink + Teal + Coral, with warm Sand surfaces.
    Typography: Manrope — compact, legible, high-density B2B UI.
 ========================================================= */
-@import url('https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&display=swap');
 
 :root {
   --ux-ink: #171a2b;
@@ -5624,3 +5625,38 @@ tbody tr:hover td {
 .public-tracking-error p { margin-bottom: 0; }
 .public-tracking-footer { margin: 28px 0 0; color: #98a2b3; font-size: 12px; line-height: 1.5; }
 @media (max-width: 480px) { .public-tracking-card { padding: 24px 20px; } }
+
+
+/* UZEMMI refresh: branded header and calendar */
+.brand-mark { display: inline-flex; align-items: center; justify-content: center; position: relative; width: 42px; height: 42px; border-radius: 12px; background: linear-gradient(145deg,#dbeafe,#ffffff 55%,#93c5fd); color: #173858; font-weight: 900; font-size: 21px; letter-spacing: -2px; box-shadow: inset 0 0 0 1px rgba(255,255,255,.75), 0 4px 12px rgba(15,23,42,.16); }
+.brand-mark-symbol { transform: translateX(-2px); }
+.brand-mark-dot { font-size: 12px; align-self: flex-start; margin: 5px 0 0 -1px; letter-spacing: 0; color: #0d9488; }
+.uz-calendar-page { display: grid; gap: 20px; }
+.page-heading { display:flex; justify-content:space-between; align-items:flex-start; gap:16px; flex-wrap:wrap; margin-bottom:4px; }
+.page-heading h2 { margin:0 0 6px; font-size:clamp(24px,3vw,32px); letter-spacing:-.04em; }
+.page-heading p { margin:0; color:#64748b; }
+.page-heading .eyebrow { color:#0f766e; font-weight:800; font-size:11px; letter-spacing:.14em; margin-bottom:7px; }
+.uz-calendar-summary { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:12px; }
+.uz-calendar-stat { padding:18px; background:linear-gradient(135deg,#fff,#f8fafc); border:1px solid #e2e8f0; border-radius:16px; display:grid; gap:7px; }
+.uz-calendar-stat span { color:#64748b; font-size:13px; }
+.uz-calendar-stat strong { color:#173858; font-size:28px; }
+.uz-calendar-layout { display:grid; grid-template-columns:minmax(0,1.25fr) minmax(320px,.9fr); gap:18px; align-items:start; }
+.uz-calendar-list-heading { display:flex; align-items:center; justify-content:space-between; gap:12px; flex-wrap:wrap; }
+.uz-calendar-list-heading h3 { margin:0; }
+.uz-calendar-events { display:grid; }
+.uz-calendar-event { display:flex; align-items:center; gap:13px; padding:15px 0; border-bottom:1px solid #e2e8f0; }
+.uz-calendar-event:last-child { border-bottom:0; }
+.uz-calendar-event-date { flex:0 0 50px; height:54px; border-radius:12px; background:#eff6ff; color:#1d4ed8; display:flex; flex-direction:column; align-items:center; justify-content:center; }
+.uz-calendar-event-date strong { font-size:20px; line-height:1.1; }
+.uz-calendar-event-date span { font-size:11px; text-transform:uppercase; }
+.uz-calendar-event-body { flex:1; min-width:0; display:grid; gap:4px; }
+.uz-calendar-event-body small { color:#64748b; }
+.uz-calendar-event-body p { margin:2px 0 0; font-size:13px; color:#475569; white-space:pre-wrap; }
+.uz-calendar-type { width:max-content; border-radius:999px; padding:3px 8px; background:#f1f5f9; color:#475569; font-size:10px; font-weight:800; }
+.uz-calendar-type-wartung { background:#fff7ed; color:#c2410c; }
+.uz-calendar-type-abbuchung { background:#fef2f2; color:#b91c1c; }
+.uz-calendar-type-fahrzeugcheck { background:#ecfdf5; color:#047857; }
+.uz-calendar-type-reinigung { background:#eff6ff; color:#1d4ed8; }
+.uz-history-links { display:flex; flex-wrap:wrap; gap:10px; }
+@media(max-width:900px) { .uz-calendar-layout { grid-template-columns:1fr; } }
+@media(max-width:560px) { .uz-calendar-summary { grid-template-columns:1fr; } .uz-calendar-event { align-items:flex-start; flex-wrap:wrap; } .uz-calendar-event > .secondary-button { margin-left:63px; } }

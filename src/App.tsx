@@ -120,6 +120,9 @@ type Delivery = {
   trackingNotifications?: boolean
   trackingPickup?: boolean
   trackingDelivery?: boolean
+  trackingToken?: string | null
+  recipientName?: string | null
+  signedDocumentUrl?: string | null
 }
 
 type AdditionalCharge = {
@@ -242,6 +245,7 @@ type PermissionKey =
   | "warnungen"
   | "fahrer"
   | "arbeitszeit"
+  | "kalender"
   | "auswertungen"
   | "finanzen"
   | "nachrichten"
@@ -369,10 +373,10 @@ const permissionOptions: { key: PermissionKey; label: string }[] = [
   { key: "reinigung", label: "Fahrzeugreinigung" },
   { key: "maengel", label: "Mängel" },
   { key: "wartungen", label: "Wartungen" },
-  { key: "dokumente", label: "Dokumente" },
   { key: "warnungen", label: "Warnungen" },
   { key: "fahrer", label: "Fahrer & Personal" },
   { key: "arbeitszeit", label: "Arbeitszeit & Kilometer" },
+  { key: "kalender", label: "Kalender" },
   { key: "auswertungen", label: "Auswertungen" },
   { key: "finanzen", label: "Finanzen & Kalkulation" },
   { key: "sops", label: "SOP & Schulungen" },
@@ -435,6 +439,19 @@ type PlannedCost = {
   day: number
   startMonth: string
   active: boolean
+}
+
+type CalendarEvent = {
+  id: string
+  titel: string
+  typ: "Termin" | "Wartung" | "Abbuchung" | "Fahrzeugcheck" | "Reinigung"
+  datum: string
+  uhrzeit: string | null
+  fahrzeug: string | null
+  betrag: number | null
+  notiz: string | null
+  erstellt_von: string | null
+  erstellt_am?: string | null
 }
 
 type FinanceGoal = {
@@ -655,10 +672,6 @@ function getDeliveryAction(delivery: Delivery): string {
   }
 
   if (delivery.status === "Beim Kunden") {
-    if (!delivery.departureTime) {
-      return "Nächster Schritt: Abfahrt vom Kunden erfassen"
-    }
-
     return "Nächster Schritt: Lieferung abschließen"
   }
 
@@ -800,6 +813,7 @@ function MainApp() {
     | "documents"
     | "warnings"
     | "messages"
+    | "calendar"
   >("dashboard")
 
   const [acquisitionRows, setAcquisitionRows] = useState<AcquisitionContact[]>([])
@@ -911,6 +925,50 @@ function MainApp() {
   const [cleaningLoading, setCleaningLoading] = useState(false)
   const [cleaningMessage, setCleaningMessage] = useState("")
 
+  type VehicleActivityKind = "Fahrzeugreinigung" | "Fahrzeugcheck" | "Wöchentlicher Fahrzeug- & Unterlagencheck"
+  type VehicleActivity = { id: number; fahrzeug_id: number; typ: VehicleActivityKind; mitarbeiter_name: string; datum: string; beschreibung: string; status: string | null }
+  const [vehicleActivityModal, setVehicleActivityModal] = useState<{ vehicle: Vehicle; typ: VehicleActivityKind } | null>(null)
+  const [vehicleActivityRows, setVehicleActivityRows] = useState<VehicleActivity[]>([])
+  const [vehicleActivityLoading, setVehicleActivityLoading] = useState(false)
+  const [vehicleActivityError, setVehicleActivityError] = useState("")
+
+  async function logVehicleActivity(input: { fahrzeugId: number; typ: VehicleActivityKind; datum?: string; beschreibung: string; status?: string | null; mitarbeiter?: string }) {
+    const { data: authData } = await supabase.auth.getUser()
+    const userId = authData.user?.id
+    if (!userId) return
+    const { error } = await supabase.from("fahrzeug_aktivitaeten").insert({
+      fahrzeug_id: input.fahrzeugId,
+      typ: input.typ,
+      user_id: userId,
+      mitarbeiter_name: input.mitarbeiter || currentUser?.name || currentUser?.email || "Unbekannt",
+      datum: input.datum || new Date().toISOString().slice(0, 10),
+      beschreibung: input.beschreibung,
+      status: input.status || null,
+    })
+    if (error) console.error("Fahrzeugaktivität konnte nicht protokolliert werden:", error.message)
+  }
+
+  async function openVehicleActivity(vehicle: Vehicle, typ: VehicleActivityKind) {
+    setVehicleActivityModal({ vehicle, typ })
+    setVehicleActivityLoading(true)
+    setVehicleActivityError("")
+    const { data, error } = await supabase
+      .from("fahrzeug_aktivitaeten")
+      .select("id, fahrzeug_id, typ, mitarbeiter_name, datum, beschreibung, status")
+      .eq("fahrzeug_id", vehicle.id)
+      .eq("typ", typ)
+      .order("datum", { ascending: false })
+      .order("id", { ascending: false })
+      .limit(100)
+    if (error) {
+      setVehicleActivityError(`Historie konnte nicht geladen werden: ${error.message}. Bitte zuerst die SQL-Datei ausführen.`)
+      setVehicleActivityRows([])
+    } else {
+      setVehicleActivityRows((data || []) as VehicleActivity[])
+    }
+    setVehicleActivityLoading(false)
+  }
+
   async function loadVehicleCleaning() {
     setCleaningLoading(true)
     const { data, error } = await supabase
@@ -962,6 +1020,13 @@ function MainApp() {
         : `Speichern fehlgeschlagen: ${error.message}`
       setCleaningMessage(message)
     } else {
+      await logVehicleActivity({
+        fahrzeugId: Number(cleaningVehicleId),
+        typ: "Fahrzeugreinigung",
+        datum: cleaningDate,
+        beschreibung: `${cleaningType}${cleaningNote.trim() ? ` – ${cleaningNote.trim()}` : ""}`,
+        status: cleaningStatus,
+      })
       setCleaningMessage("Fahrzeugreinigung wurde gespeichert.")
       setCleaningNote("")
       await loadVehicleCleaning()
@@ -1029,8 +1094,6 @@ function MainApp() {
   const canManageSops = isAdmin || isDisponent
   const pendingSopCount = currentUser?.rolle === "Fahrer" ? pendingSops.length : 0
   const operationalAlertCount = isAdmin || isDisponent ? defectCounts.gesamt : 0
-  const totalNotificationCount = pendingSopCount + operationalAlertCount
-
 
   function hasPermission(permission: PermissionKey): boolean {
     if (isAdmin) return true
@@ -1048,6 +1111,7 @@ function MainApp() {
 
   // Jede sichtbare Funktion kann separat vergeben werden. Admins haben
   // weiterhin automatisch Zugriff auf alles.
+  const canViewCalendar = hasPermission("kalender")
   const canViewReports = hasPermission("auswertungen")
   const canViewFinance = hasPermission("finanzen")
   const canEditShiftCorrections = hasPermission("arbeitszeit") || hasPermission("auswertungen")
@@ -1936,9 +2000,11 @@ function MainApp() {
     (item) => weeklyVehicleCheck[item.key] === true
   )
 
-  function markWeeklyVehicleCheckComplete() {
+  async function markWeeklyVehicleCheckComplete() {
     if (!vehicleCheckVehicleId || !weeklyVehicleCheckComplete) return
-    const next = { ...weeklyVehicleCheck, erledigtAm: new Date().toISOString(), erledigtVon: currentUser?.name || currentUser?.email || "Unbekannt" }
+    const completedAt = new Date().toISOString()
+    const employeeName = currentUser?.name || currentUser?.email || "Unbekannt"
+    const next = { ...weeklyVehicleCheck, erledigtAm: completedAt, erledigtVon: employeeName }
     setWeeklyVehicleCheck(next)
     try {
       window.localStorage.setItem(
@@ -1946,6 +2012,14 @@ function MainApp() {
         JSON.stringify(next)
       )
     } catch { /* ignore */ }
+    await logVehicleActivity({
+      fahrzeugId: Number(vehicleCheckVehicleId),
+      typ: "Wöchentlicher Fahrzeug- & Unterlagencheck",
+      datum: completedAt.slice(0, 10),
+      beschreibung: `Wöchentlicher Fahrzeug- & Unterlagencheck erfolgreich durchgeführt${weeklyVehicleCheck.bemerkung.trim() ? ` – ${weeklyVehicleCheck.bemerkung.trim()}` : ""}`,
+      status: "Erfolgreich",
+      mitarbeiter: employeeName,
+    })
   }
 
   const allChecksCompleted =
@@ -2076,7 +2150,17 @@ function MainApp() {
     }
 
     setVehicleCheckSaving(false)
-    if (data) setLastVehicleCheck(data as VehicleCheck)
+    if (data) {
+      setLastVehicleCheck(data as VehicleCheck)
+      await logVehicleActivity({
+        fahrzeugId: vehicleCheckVehicle.id,
+        typ: "Fahrzeugcheck",
+        datum: String(data.datum || new Date().toISOString().slice(0, 10)).slice(0, 10),
+        beschreibung: vehicleCheckPassed ? "Fahrzeugcheck erfolgreich durchgeführt" : `Fahrzeugcheck mit ${badIndexes.length} festgestellten Mangel/Mängeln durchgeführt`,
+        status: vehicleCheckPassed ? "Erfolgreich" : "Mängel festgestellt",
+        mitarbeiter: currentUser?.name || currentUser?.email || "Unbekannt",
+      })
+    }
     setVehicleCheckFinished(true)
     setVehicleCheckMessage(
       vehicleCheckPassed
@@ -2100,6 +2184,21 @@ function MainApp() {
   }
 
   const [fleetVehicles, setFleetVehicles] = useState<FleetVehicleInfo[]>([])
+
+  const vehicleComplianceAlertCount = (isAdmin || isDisponent)
+    ? fleetVehicles.filter((vehicle) => {
+        const now = new Date()
+        const lastCheckDate = vehicle.lastCheck?.datum ? new Date(vehicle.lastCheck.datum) : null
+        const lastCleaning = cleaningRows
+          .filter((row) => Number(row.fahrzeug_id) === Number(vehicle.id) && row.status === "Erledigt")
+          .sort((a, b) => String(b.datum).localeCompare(String(a.datum)))[0]
+        const lastCleaningDate = lastCleaning?.datum ? new Date(lastCleaning.datum) : null
+        const checkOverdue = !lastCheckDate || (now.getTime() - lastCheckDate.getTime()) > 10 * 24 * 60 * 60 * 1000
+        const cleaningOverdue = !lastCleaningDate || (now.getTime() - lastCleaningDate.getTime()) > 10 * 24 * 60 * 60 * 1000
+        return checkOverdue || cleaningOverdue
+      }).length
+    : 0
+  const totalNotificationCount = pendingSopCount + operationalAlertCount + vehicleComplianceAlertCount
   const [fleetLoading, setFleetLoading] = useState(false)
   const [fleetError, setFleetError] = useState("")
   const [fleetEditVehicle, setFleetEditVehicle] = useState<FleetVehicleInfo | null>(null)
@@ -2390,6 +2489,66 @@ function MainApp() {
   const [reportTourRows, setReportTourRows] = useState<any[]>([])
   const [reportShiftRows, setReportShiftRows] = useState<any[]>([])
   const [reportWorkRows, setReportWorkRows] = useState<any[]>([])
+  const [calendarEvents, setCalendarEvents] = useState<CalendarEvent[]>([])
+  const [calendarMaintenanceEvents, setCalendarMaintenanceEvents] = useState<CalendarEvent[]>([])
+  const [calendarLoading, setCalendarLoading] = useState(false)
+  const [calendarMessage, setCalendarMessage] = useState("")
+  const [calendarMonth, setCalendarMonth] = useState(() => getToday().slice(0, 7))
+  const [calendarForm, setCalendarForm] = useState({ titel: "", typ: "Termin" as CalendarEvent["typ"], datum: getToday(), uhrzeit: "09:00", fahrzeug: "", betrag: "", notiz: "" })
+
+  async function loadCalendarEvents() {
+    setCalendarLoading(true)
+    setCalendarMessage("")
+    const [{ data, error }, { data: maintenanceRows }] = await Promise.all([
+      supabase.from("kalender_termine").select("*").order("datum", { ascending: true }),
+      supabase.from("wartungen").select("id, fahrzeug_id, kennzeichen, wartungsart, naechste_wartung_datum, notiz").not("naechste_wartung_datum", "is", null),
+    ])
+    if (error) {
+      setCalendarMessage("Kalender konnte nicht geladen werden. Bitte führe zuerst die mitgelieferte SQL-Datei in Supabase aus.")
+      setCalendarEvents([])
+    } else {
+      setCalendarEvents((data || []) as CalendarEvent[])
+    }
+    setCalendarMaintenanceEvents((maintenanceRows || []).filter((row: any) => row.naechste_wartung_datum).map((row: any) => ({
+      id: `maintenance-${row.id}`, titel: row.wartungsart || "Geplante Fahrzeugwartung", typ: "Wartung" as const,
+      datum: row.naechste_wartung_datum, uhrzeit: null, fahrzeug: row.kennzeichen || (row.fahrzeug_id ? `Fahrzeug ${row.fahrzeug_id}` : null),
+      betrag: null, notiz: row.notiz || "Aus der Fahrzeugwartungsplanung", erstellt_von: null,
+    })))
+    setCalendarLoading(false)
+  }
+
+  async function saveCalendarEvent() {
+    if (!calendarForm.titel.trim() || !calendarForm.datum) {
+      setCalendarMessage("Bitte Titel und Datum eintragen.")
+      return
+    }
+    const { data: authData } = await supabase.auth.getUser()
+    const payload = {
+      titel: calendarForm.titel.trim(), typ: calendarForm.typ, datum: calendarForm.datum,
+      uhrzeit: calendarForm.uhrzeit || null, fahrzeug: calendarForm.fahrzeug.trim() || null,
+      betrag: calendarForm.betrag === "" ? null : Number(calendarForm.betrag),
+      notiz: calendarForm.notiz.trim() || null, erstellt_von: authData.user?.id || null,
+    }
+    const { error } = await supabase.from("kalender_termine").insert(payload)
+    if (error) {
+      setCalendarMessage(`Termin konnte nicht gespeichert werden: ${error.message}`)
+      return
+    }
+    setCalendarForm({ titel: "", typ: "Termin", datum: getToday(), uhrzeit: "09:00", fahrzeug: "", betrag: "", notiz: "" })
+    setCalendarMessage("Termin gespeichert.")
+    await loadCalendarEvents()
+  }
+
+  async function deleteCalendarEvent(id: string) {
+    const { error } = await supabase.from("kalender_termine").delete().eq("id", id)
+    if (error) setCalendarMessage(`Termin konnte nicht gelöscht werden: ${error.message}`)
+    else await loadCalendarEvents()
+  }
+
+  useEffect(() => {
+    if (page === "calendar") void loadCalendarEvents()
+  }, [page])
+
   const [financeSection, setFinanceSection] = useState<"finanzen" | "kalkulation" | "ziele">("finanzen")
   const [financeMonth, setFinanceMonth] = useState(() => getToday().slice(0, 7))
   const [financeRows, setFinanceRows] = useState<FinanceEntry[]>([])
@@ -2401,12 +2560,24 @@ function MainApp() {
   })
   const [financeCalc, setFinanceCalc] = useState({
     umsatz: "", kilometer: "", verbrauch: "10", dieselpreis: "1.70",
-    fahrerstunden: "", fahrerlohn: "18", sonstigeKosten: "",
+    fahrerstunden: "", fahrerlohn: "18", sonstigeKosten: "0.17",
   })
   const [financeShowAll, setFinanceShowAll] = useState(false)
   const [plannedCosts, setPlannedCosts] = useState<PlannedCost[]>(() => {
     try { return JSON.parse(window.localStorage.getItem("transportapp_planned_costs") || "[]") as PlannedCost[] } catch { return [] }
   })
+
+  const calendarDisplayEvents: CalendarEvent[] = [
+    ...calendarEvents,
+    ...calendarMaintenanceEvents,
+    ...plannedCosts.filter((cost) => cost.active && calendarMonth >= cost.startMonth).map((cost) => ({
+      id: `planned-cost-${cost.id}`, titel: cost.name, typ: "Abbuchung" as const,
+      datum: `${calendarMonth}-${String(Math.min(28, Math.max(1, cost.day))).padStart(2, "0")}`,
+      uhrzeit: null, fahrzeug: null, betrag: cost.amount, notiz: `Wiederkehrende Abbuchung · ${cost.category}`,
+      erstellt_von: null,
+    })),
+  ].sort((a, b) => a.datum.localeCompare(b.datum) || (a.uhrzeit || "").localeCompare(b.uhrzeit || ""))
+
   const [financeGoals, setFinanceGoals] = useState<FinanceGoal[]>(() => {
     try { return JSON.parse(window.localStorage.getItem("transportapp_finance_goals") || "[]") as FinanceGoal[] } catch { return [] }
   })
@@ -3373,7 +3544,7 @@ function MainApp() {
       )
       .subscribe((status) => {
         console.log(
-          "TransportApp Realtime:",
+          "UZEMMI Realtime:",
           status
         )
       })
@@ -3846,7 +4017,9 @@ function MainApp() {
           tracking_empfaenger_email,
           tracking_benachrichtigungen_aktiv,
           tracking_meldung_abholung,
-          tracking_meldung_zustellung
+          tracking_meldung_zustellung,
+          tracking_token,
+          empfaenger_name
         `
       )
       .eq("tour_id", tourId)
@@ -3925,6 +4098,8 @@ function MainApp() {
         trackingNotifications: Boolean(row.tracking_benachrichtigungen_aktiv),
         trackingPickup: Boolean(row.tracking_meldung_abholung),
         trackingDelivery: Boolean(row.tracking_meldung_zustellung),
+        trackingToken: row.tracking_token || null,
+        recipientName: row.empfaenger_name || null,
         additionalCharges: Array.isArray(row.zusatzkosten)
           ? row.zusatzkosten
               .filter((charge: unknown): charge is AdditionalCharge => {
@@ -5223,7 +5398,7 @@ function MainApp() {
   }
 
   function reportFileBaseName(): string {
-    return `TransportApp_Bericht_${reportStart}_${reportEnd}`
+    return `UZEMMI_Bericht_${reportStart}_${reportEnd}`
   }
 
   function escapeCsv(value: unknown): string {
@@ -5412,7 +5587,7 @@ function MainApp() {
     ].map(([label, value]) => `${escapeCsv(label)};${escapeCsv(value)}`)
 
     const content = [
-      "TransportApp – Bericht",
+      "UZEMMI – Bericht",
       "",
       ...summary,
       "",
@@ -5444,7 +5619,7 @@ function MainApp() {
     }
 
     doc.setFontSize(18)
-    doc.text("TransportApp – Fahrerbericht", margin, y)
+    doc.text("UZEMMI – Fahrerbericht", margin, y)
     y += 9
     doc.setFontSize(10)
     doc.text(`Zeitraum: ${reportStart} bis ${reportEnd}`, margin, y)
@@ -5637,6 +5812,8 @@ function MainApp() {
       changes.ankunftszeit = null
       changes.angeliefert_zeit = null
       changes.abfahrtszeit = null
+      changes.abholung_am = null
+      changes.zugestellt_am = null
       changes.puenktlichkeit = null
     }
 
@@ -5724,6 +5901,7 @@ function MainApp() {
     const success =
       await updateDelivery(id, {
         status: "Unterwegs",
+        abholung_am: new Date().toISOString(),
       })
 
     if (!success) {
@@ -5745,23 +5923,32 @@ function MainApp() {
     setDeliveryMessage("")
   }
 
-  async function setPickupArrivalTime(id: number, time: string) {
-    const delivery = deliveries.find((item) => item.id === id)
-    if (!delivery || delivery.status !== "Unterwegs") return
-    const success = await updateDelivery(id, { abhol_ankunftszeit: time || null })
-    if (!success) return
-    setDeliveries((old) => old.map((item) => item.id === id ? { ...item, pickupArrivalTime: time || null } : item))
+  function timestampFromEnteredTime(time: string): string | null {
+    if (!time) return null
+    const [hours, minutes] = time.split(":").map(Number)
+    if (!Number.isFinite(hours) || !Number.isFinite(minutes)) return null
+    const enteredDate = new Date()
+    enteredDate.setHours(hours, minutes, 0, 0)
+    return enteredDate.toISOString()
   }
 
   async function setPickupDepartureTime(id: number, time: string) {
     const delivery = deliveries.find((item) => item.id === id)
-    if (!delivery || !delivery.pickupArrivalTime) {
-      alert("Bitte zuerst die Ankunft bei der Abholstelle erfassen.")
-      return
-    }
-    const success = await updateDelivery(id, { abhol_abfahrtszeit: time || null })
+    if (!delivery) return
+    // Bei manueller Eingabe den eingegebenen Zeitpunkt speichern,
+    // nicht die aktuelle Uhrzeit beim Tippen.
+    const departureTimestamp = timestampFromEnteredTime(time)
+    const success = await updateDelivery(id, {
+      abhol_abfahrtszeit: time || null,
+      abholung_am: departureTimestamp,
+      status: time ? "Unterwegs" : delivery.status,
+    })
     if (!success) return
-    setDeliveries((old) => old.map((item) => item.id === id ? { ...item, pickupDepartureTime: time || null } : item))
+    setDeliveries((old) => old.map((item) => item.id === id ? {
+      ...item,
+      status: time ? "Unterwegs" : item.status,
+      pickupDepartureTime: time || null,
+    } : item))
   }
 
   async function arriveAtCustomer(
@@ -5836,6 +6023,7 @@ function MainApp() {
       await updateDelivery(id, {
         status: "Beim Kunden",
         ankunftszeit: currentTime,
+        zugestellt_am: timestampFromEnteredTime(currentTime),
         puenktlichkeit: punctuality,
       })
 
@@ -5870,6 +6058,7 @@ function MainApp() {
       targetStatus = "Unterwegs"
       changes.status = "Unterwegs"
       changes.ankunftszeit = null
+      changes.zugestellt_am = null
       changes.puenktlichkeit = null
     } else if (delivery.status === "Unterwegs") {
       targetStatus = "Offen"
@@ -5927,6 +6116,7 @@ function MainApp() {
       const success =
         await updateDelivery(id, {
           ankunftszeit: null,
+          zugestellt_am: null,
           puenktlichkeit: null,
         })
 
@@ -5959,6 +6149,7 @@ function MainApp() {
       await updateDelivery(id, {
         status: "Beim Kunden",
         ankunftszeit: time,
+        zugestellt_am: timestampFromEnteredTime(time),
         puenktlichkeit: punctuality,
       })
 
@@ -5980,39 +6171,6 @@ function MainApp() {
     )
 
     setActiveDelivery(id)
-  }
-
-  async function setDepartureTime(
-    id: number,
-    time: string
-  ) {
-    const delivery = deliveries.find((item) => item.id === id)
-    if (!delivery || delivery.status !== "Beim Kunden" || !delivery.arrivalTime) {
-      alert("Bitte zuerst die Ankunft beim Kunden erfassen.")
-      return
-    }
-
-    const success =
-      await updateDelivery(id, {
-        abfahrtszeit:
-          time || null,
-      })
-
-    if (!success) {
-      return
-    }
-
-    setDeliveries((old) =>
-      old.map((delivery) =>
-        delivery.id === id
-          ? {
-              ...delivery,
-              departureTime:
-                time || undefined,
-            }
-          : delivery
-      )
-    )
   }
 
   async function setComplaint(
@@ -6267,16 +6425,19 @@ function MainApp() {
       return
     }
 
-    if (!delivery.departureTime) {
-      alert(
-        "Bitte zuerst die Abfahrtszeit eintragen."
-      )
+    const recipientName = window.prompt(
+      "Name der Person, die die Sendung entgegengenommen hat:",
+      delivery.recipientName || ""
+    )
+    if (recipientName === null || !recipientName.trim()) {
+      alert("Bitte den Namen des Empfängers eingeben, bevor du die Lieferung abschließt.")
       return
     }
 
     const success =
       await updateDelivery(id, {
         status: "Erledigt",
+        empfaenger_name: recipientName.trim(),
       })
 
     if (!success) {
@@ -6289,6 +6450,7 @@ function MainApp() {
           ? {
               ...item,
               status: "Erledigt",
+              recipientName: recipientName.trim(),
             }
           : item
       )
@@ -7404,6 +7566,21 @@ function MainApp() {
     setEditingTrackingNotifications(false)
     setEditingTrackingPickup(false)
     setEditingTrackingDelivery(false)
+  }
+
+  async function copyDeliveryTrackingLink(delivery: Delivery) {
+    if (!delivery.trackingToken) {
+      alert("Für diese Lieferung ist noch kein Tracking-Token vorhanden. Bitte lade die Tour neu und versuche es erneut.")
+      return
+    }
+
+    const trackingUrl = `${window.location.origin}/tracking?token=${encodeURIComponent(delivery.trackingToken)}`
+    try {
+      await navigator.clipboard.writeText(trackingUrl)
+      alert("Tracking-Link wurde kopiert. Du kannst ihn jetzt an den Kunden weitergeben.")
+    } catch {
+      window.prompt("Kopiere diesen Tracking-Link:", trackingUrl)
+    }
   }
 
   async function saveEditedDelivery() {
@@ -8789,6 +8966,7 @@ function MainApp() {
       | "documents"
       | "warnings"
       | "messages"
+    | "calendar"
   ) {
     setMenuOpen(false)
     const requiredPermission: Partial<Record<typeof nextPage, PermissionKey>> = {
@@ -8812,6 +8990,7 @@ function MainApp() {
     }
 
     if (nextPage === "users" && !isAdmin) return
+    if (nextPage === "calendar" && !canViewCalendar) return
     if (requiredPermission[nextPage] && !hasPermission(requiredPermission[nextPage]!)) return
     if (nextPage === "sops" && !canViewSops) return
     if (nextPage === "reports" && !canViewReports) return
@@ -8921,7 +9100,7 @@ function MainApp() {
     return (
       <div className="app" style={{ minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center", padding: "24px" }}>
         <div className="card" style={{ width: "100%", maxWidth: "460px", textAlign: "center" }}>
-          <h1>TransportApp</h1>
+          <h1>UZEMMI</h1>
           <p>Anmeldung wird geprüft...</p>
         </div>
       </div>
@@ -8932,7 +9111,7 @@ function MainApp() {
     return (
       <div className="app" style={{ minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center", padding: "24px" }}>
         <div className="card" style={{ width: "100%", maxWidth: "460px" }}>
-          <h1>TransportApp</h1>
+          <h1>UZEMMI</h1>
           <p>Neues Passwort festlegen</p>
 
           <div className="form-group">
@@ -8989,7 +9168,7 @@ function MainApp() {
     return (
       <div className="app" style={{ minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center", padding: "24px" }}>
         <div className="card" style={{ width: "100%", maxWidth: "460px" }}>
-          <h1>TransportApp</h1>
+          <h1>UZEMMI</h1>
           <p>
             {authMode === "login"
               ? "Bitte anmelden."
@@ -9545,13 +9724,13 @@ function MainApp() {
         </div>
       )}
 
-      {/* HEADER */}
+      {/* HEADER: nur im Dashboard anzeigen */}
 
-      <header className="header">
+      {page === "dashboard" && <header className="header">
         <div className="header-brand-mobile">
-          <span className="brand-mark">🚚</span>
+          <span className="brand-mark" aria-label="UZEMMI Logo"><span className="brand-mark-symbol">U</span><span className="brand-mark-dot">Z</span></span>
           <div>
-            <h1>TransportApp</h1>
+            <h1>UZEMMI</h1>
             <p>Effizient. Sicher. Unterwegs.</p>
           </div>
         </div>
@@ -9613,6 +9792,20 @@ function MainApp() {
                       </div>
                     </div>
                   )}
+                  {vehicleComplianceAlertCount > 0 && (
+                    <button
+                      type="button"
+                      className="header-notification-item"
+                      onClick={() => { setNotificationPanelOpen(false); navigateTo("fleet") }}
+                      style={{ width: "100%", textAlign: "left", border: 0, cursor: "pointer" }}
+                    >
+                      <span className="header-notification-item-icon">🚨</span>
+                      <div>
+                        <strong>{vehicleComplianceAlertCount} Fahrzeug{vehicleComplianceAlertCount === 1 ? "" : "e"} mit überfälligem Check / Reinigung</strong>
+                        <span>Seit mehr als 10 Tagen nicht dokumentiert. Fahrzeugverwaltung öffnen.</span>
+                      </div>
+                    </button>
+                  )}
                   {totalNotificationCount === 0 && (
                     <div className="header-notification-empty">
                       Keine neuen Benachrichtigungen.
@@ -9648,7 +9841,7 @@ function MainApp() {
             )}
           </div>
         </div>
-      </header>
+      </header>}
 
       {/* NAVIGATION */}
 
@@ -9673,7 +9866,7 @@ function MainApp() {
 
       <nav className={menuOpen ? "navigation navigation-open" : "navigation"}>
         <div className="navigation-title">
-          <span>TransportApp</span>
+          <span>UZEMMI</span>
           <button
             type="button"
             className="navigation-close"
@@ -9812,15 +10005,6 @@ function MainApp() {
             </button>
           )}
 
-          {hasPermission("arbeitszeit") && (
-            <button
-              className={page === "work-time" ? "nav active" : "nav"}
-              onClick={() => navigateTo("work-time")}
-            >
-              <span style={{ marginRight: "8px" }}>⏱️</span>Arbeitszeit & Kilometer
-            </button>
-          )}
-
           {isAdmin && (
             <button
               className={page === "users" ? "nav active" : "nav"}
@@ -9884,16 +10068,16 @@ function MainApp() {
           onClick={() => toggleMenuSection("auswertung")}
           aria-expanded={expandedMenuSections.auswertung}
         >
-          <span>Dokumente & Auswertung</span>
+          <span>Kalender & Auswertung</span>
           <span>{expandedMenuSections.auswertung ? "▾" : "▸"}</span>
         </button>
         <div className={expandedMenuSections.auswertung ? "navigation-submenu open" : "navigation-submenu"}>
 
-        {hasPermission("dokumente") && <button
-          className={page === "documents" ? "nav active" : "nav"}
-          onClick={() => navigateTo("documents")}
+        {canViewCalendar && <button
+          className={page === "calendar" ? "nav active" : "nav"}
+          onClick={() => navigateTo("calendar")}
         >
-          <span style={{ marginRight: "8px" }}>📁</span>Dokumente
+          <span style={{ marginRight: "8px" }}>🗓️</span>Kalender
         </button>}
 
         {canViewReports && <button
@@ -11094,7 +11278,6 @@ function MainApp() {
                       )}
                     </div>
                     <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-                      <button type="button" className="secondary-button" onClick={() => navigateTo("documents")}>📁 Unterlagen öffnen</button>
                       <button type="button" className="primary-button" onClick={markWeeklyVehicleCheckComplete} disabled={!weeklyVehicleCheckComplete}>
                         {weeklyVehicleCheckComplete ? "✓ Wochencheck bestätigen" : "Noch nicht vollständig"}
                       </button>
@@ -11723,17 +11906,10 @@ function MainApp() {
                       <p><strong>Geplante Abholzeit:</strong> {delivery.pickupTime || "Nicht angegeben"} Uhr</p>
                       {delivery.pickupNote && <p><strong>Hinweise:</strong> {delivery.pickupNote}</p>}
                       <div className="time-section">
-                        <label><strong>Ankunft bei der Abholstelle</strong></label>
-                        <div className="time-row">
-                          <input type="time" value={delivery.pickupArrivalTime || ""} onChange={(event) => setPickupArrivalTime(delivery.id, event.target.value)} disabled={deliverySaving} />
-                          <button className="secondary-button" disabled={deliverySaving} onClick={() => setPickupArrivalTime(delivery.id, getCurrentTime())}>Jetzt</button>
-                        </div>
-                      </div>
-                      <div className="time-section">
                         <label><strong>Abfahrt von der Abholstelle</strong></label>
                         <div className="time-row">
-                          <input type="time" value={delivery.pickupDepartureTime || ""} onChange={(event) => setPickupDepartureTime(delivery.id, event.target.value)} disabled={deliverySaving || !delivery.pickupArrivalTime} />
-                          <button className="secondary-button" disabled={deliverySaving || !delivery.pickupArrivalTime} onClick={() => setPickupDepartureTime(delivery.id, getCurrentTime())}>Jetzt</button>
+                          <input type="time" value={delivery.pickupDepartureTime || ""} onChange={(event) => setPickupDepartureTime(delivery.id, event.target.value)} disabled={deliverySaving} />
+                          <button className="secondary-button" disabled={deliverySaving} onClick={() => setPickupDepartureTime(delivery.id, getCurrentTime())}>Jetzt</button>
                         </div>
                       </div>
                       <div className="note-section">
@@ -11880,7 +12056,7 @@ function MainApp() {
                             fontWeight: 900,
                           }}
                         >
-                          👉 Nächster Schritt: {delivery.departureTime ? "Lieferung abschließen" : "Abfahrt vom Kunden erfassen"}
+                          👉 Nächster Schritt: Lieferung abschließen
                         </div>
 
                         <div className="time-section">
@@ -11922,56 +12098,6 @@ function MainApp() {
                               onClick={() =>
                                 arriveAtCustomer(
                                   delivery.id
-                                )
-                              }
-                            >
-                              Jetzt
-                            </button>
-
-                          </div>
-
-                        </div>
-
-                        <div className="time-section">
-
-                          <label>
-                            <strong>
-                              Abfahrt vom
-                              Kunden
-                            </strong>
-                          </label>
-
-                          <div className="time-row">
-
-                            <input
-                              type="time"
-                              value={
-                                delivery.departureTime ||
-                                ""
-                              }
-                              disabled={
-                                deliverySaving
-                              }
-                              onChange={(
-                                event
-                              ) =>
-                                setDepartureTime(
-                                  delivery.id,
-                                  event.target
-                                    .value
-                                )
-                              }
-                            />
-
-                            <button
-                              className="secondary-button"
-                              disabled={
-                                deliverySaving
-                              }
-                              onClick={() =>
-                                setDepartureTime(
-                                  delivery.id,
-                                  getCurrentTime()
                                 )
                               }
                             >
@@ -12051,18 +12177,6 @@ function MainApp() {
                             multiple
                             disabled={deliveryUploading === delivery.id}
                             onChange={(event) => uploadDeliveryDocuments(delivery.id, "Frachtbrief", event.target.files)}
-                          />
-                          <small>PDF, JPG oder PNG, maximal 15 MB je Datei.</small>
-
-                          <label style={{ marginTop: "12px" }}>
-                            <strong>Tankbelege hochladen (optional)</strong>
-                          </label>
-                          <input
-                            type="file"
-                            accept=".pdf,image/jpeg,image/png"
-                            multiple
-                            disabled={deliveryUploading === delivery.id}
-                            onChange={(event) => uploadDeliveryDocuments(delivery.id, "Tankbeleg", event.target.files)}
                           />
                           <small>PDF, JPG oder PNG, maximal 15 MB je Datei.</small>
 
@@ -13499,6 +13613,14 @@ function MainApp() {
                               </div>
                               <div className="tracking-settings">
                                 <h4>📧 Kunden-Tracking (optional)</h4>
+                                <button
+                                  type="button"
+                                  className="secondary-button"
+                                  style={{ marginBottom: "12px" }}
+                                  onClick={() => copyDeliveryTrackingLink(delivery)}
+                                >
+                                  🔗 Tracking-Link kopieren
+                                </button>
                                 <div className="form-group"><label>Separate Empfänger-E-Mail</label><input type="email" value={editingTrackingEmail} onChange={(e)=>setEditingTrackingEmail(e.target.value)} placeholder="empfaenger@beispiel.de" /></div>
                                 <label className="tracking-toggle"><input type="checkbox" checked={editingTrackingNotifications} onChange={(e)=>setEditingTrackingNotifications(e.target.checked)} /> Kunde wünscht Tracking-Benachrichtigungen</label>
                                 {editingTrackingNotifications && <div className="tracking-options"><label className="tracking-toggle"><input type="checkbox" checked={editingTrackingPickup} onChange={(e)=>setEditingTrackingPickup(e.target.checked)} /> Bei Abholung informieren</label><label className="tracking-toggle"><input type="checkbox" checked={editingTrackingDelivery} onChange={(e)=>setEditingTrackingDelivery(e.target.checked)} /> Bei Zustellung informieren</label></div>}
@@ -14254,7 +14376,7 @@ function MainApp() {
                 <label>Dieselpreis €/l<input type="number" min="0" step="0.01" value={financeCalc.dieselpreis} onChange={(e) => setFinanceCalc({...financeCalc, dieselpreis:e.target.value})}/></label>
                 <label>Fahrerstunden<input type="number" min="0" step="0.25" value={financeCalc.fahrerstunden} onChange={(e) => setFinanceCalc({...financeCalc, fahrerstunden:e.target.value})}/></label>
                 <label>Fahrerlohn €/Stunde<input type="number" min="0" step="0.5" value={financeCalc.fahrerlohn} onChange={(e) => setFinanceCalc({...financeCalc, fahrerlohn:e.target.value})}/></label>
-                <label>Sonstige Tourkosten €<input type="number" min="0" step="0.01" value={financeCalc.sonstigeKosten} onChange={(e) => setFinanceCalc({...financeCalc, sonstigeKosten:e.target.value})}/></label>
+                <label>Sonstige Tourkosten €<input type="number" min="0" step="0.01" value={financeCalc.sonstigeKosten || "0.17"} onChange={(e) => setFinanceCalc({...financeCalc, sonstigeKosten:e.target.value})}/></label>
               </div>
               <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(170px,1fr))",gap:"10px",marginTop:"15px"}}>
                 <div className="card"><strong>Kraftstoff</strong><div style={{fontSize:"22px",fontWeight:800}}>{euro(calcFuelCost)}</div></div>
@@ -14266,6 +14388,34 @@ function MainApp() {
             <div className="card">
               <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",gap:"10px",flexWrap:"wrap"}}><h3 style={{margin:0}}>📒 Buchungen im Monat</h3><div style={{display:"flex",gap:"8px"}}><button type="button" className="secondary-button" onClick={() => void loadFinanceRows()} disabled={financeLoading}>↻ Aktualisieren</button><button type="button" className="secondary-button" onClick={() => setFinanceShowAll(!financeShowAll)}>{financeShowAll ? "Nur Übersicht" : "Alle Details"}</button></div></div>
               {financeLoading ? <p>Finanzdaten werden geladen…</p> : financeRows.length === 0 ? <p>Noch keine Buchungen für diesen Monat.</p> : <div style={{marginTop:"10px"}}>{financeRows.slice(0, financeShowAll ? 200 : 8).map((entry) => <div key={entry.id} style={{display:"flex",justifyContent:"space-between",alignItems:"center",gap:"10px",flexWrap:"wrap",borderTop:"1px solid #e2e8f0",padding:"12px 0"}}><div><strong>{entry.typ === "Einnahme" ? "📈" : "📉"} {entry.kategorie}</strong><div style={{fontSize:"13px",color:"#64748b"}}>{entry.datum} · {entry.beschreibung || "Keine Beschreibung"}{entry.tour_id ? ` · Tour ${entry.tour_id}` : ""}</div></div><div style={{display:"flex",alignItems:"center",gap:"10px"}}><strong style={{color:entry.typ === "Einnahme" ? "#15803d" : "#be123c"}}>{entry.typ === "Einnahme" ? "+" : "-"}{euro(Number(entry.betrag || 0))}</strong><button type="button" className="secondary-button" onClick={() => void deleteFinanceEntry(entry)} style={{color:"#b91c1c",borderColor:"#fecaca"}}>Löschen</button></div></div>)}</div>}
+            </div>
+          </section>
+        )}
+
+        {page === "calendar" && canViewCalendar && (
+          <section className="uz-calendar-page">
+            <div className="page-heading"><div><p className="eyebrow">PLANUNG & ÜBERSICHT</p><h2>UZEMMI Kalender</h2><p>Termine, Wartungen, Fahrzeugchecks und geplante Abbuchungen zentral im Blick.</p></div><button type="button" className="secondary-button" onClick={() => void loadCalendarEvents()}>↻ Aktualisieren</button></div>
+            <div className="uz-calendar-summary">
+              <div className="uz-calendar-stat"><span>Termine im Monat</span><strong>{calendarDisplayEvents.filter((e) => e.datum.startsWith(calendarMonth)).length}</strong></div>
+              <div className="uz-calendar-stat"><span>Wartungen</span><strong>{calendarDisplayEvents.filter((e) => e.datum.startsWith(calendarMonth) && e.typ === "Wartung").length}</strong></div>
+              <div className="uz-calendar-stat"><span>Abbuchungen</span><strong>{calendarDisplayEvents.filter((e) => e.datum.startsWith(calendarMonth) && e.typ === "Abbuchung").length}</strong></div>
+            </div>
+            <div className="uz-calendar-layout">
+              <div className="card">
+                <div className="uz-calendar-list-heading"><h3>Geplante Ereignisse</h3><input aria-label="Kalendermonat" type="month" value={calendarMonth} onChange={(e) => setCalendarMonth(e.target.value)} /></div>
+                {calendarLoading ? <p>Kalender wird geladen …</p> : calendarDisplayEvents.filter((event) => event.datum.startsWith(calendarMonth)).length === 0 ? <p>Für diesen Monat sind noch keine Termine eingetragen.</p> : <div className="uz-calendar-events">{calendarDisplayEvents.filter((event) => event.datum.startsWith(calendarMonth)).map((event) => <article className="uz-calendar-event" key={event.id}><div className="uz-calendar-event-date"><strong>{new Date(`${event.datum}T12:00:00`).toLocaleDateString("de-DE", { day: "2-digit" })}</strong><span>{new Date(`${event.datum}T12:00:00`).toLocaleDateString("de-DE", { month: "short" })}</span></div><div className="uz-calendar-event-body"><span className={`uz-calendar-type uz-calendar-type-${event.typ.toLowerCase()}`}>{event.typ}</span><strong>{event.titel}</strong><small>{event.uhrzeit || "Ganztägig"}{event.fahrzeug ? ` · ${event.fahrzeug}` : ""}{event.betrag !== null ? ` · ${euro(event.betrag)}` : ""}</small>{event.notiz && <p>{event.notiz}</p>}</div>{!event.id.startsWith("maintenance-") && !event.id.startsWith("planned-cost-") && <button type="button" className="secondary-button" onClick={() => void deleteCalendarEvent(event.id)} aria-label={`Termin ${event.titel} löschen`}>Löschen</button>}</article>)}</div>}
+                {calendarMessage && <p className="form-message">{calendarMessage}</p>}
+              </div>
+              <div className="card"><h3>Termin eintragen</h3><p className="muted">Plane auch Wartungen, Fahrzeugchecks oder Abbuchungen.</p>
+                <div className="form-grid"><label>Titel *<input value={calendarForm.titel} onChange={(e) => setCalendarForm({ ...calendarForm, titel: e.target.value })} placeholder="z. B. Ölwechsel Fahrzeug 1" /></label>
+                  <label>Art<select value={calendarForm.typ} onChange={(e) => setCalendarForm({ ...calendarForm, typ: e.target.value as CalendarEvent["typ"] })}><option>Termin</option><option>Wartung</option><option>Abbuchung</option><option>Fahrzeugcheck</option><option>Reinigung</option></select></label>
+                  <label>Datum *<input type="date" value={calendarForm.datum} onChange={(e) => setCalendarForm({ ...calendarForm, datum: e.target.value })} /></label>
+                  <label>Uhrzeit<input type="time" value={calendarForm.uhrzeit} onChange={(e) => setCalendarForm({ ...calendarForm, uhrzeit: e.target.value })} /></label>
+                  <label>Fahrzeug / Kennzeichen<input value={calendarForm.fahrzeug} onChange={(e) => setCalendarForm({ ...calendarForm, fahrzeug: e.target.value })} placeholder="z. B. UH-UM 123" /></label>
+                  <label>Betrag € (optional)<input type="number" min="0" step="0.01" value={calendarForm.betrag} onChange={(e) => setCalendarForm({ ...calendarForm, betrag: e.target.value })} /></label>
+                  <label className="full-width">Notiz<textarea value={calendarForm.notiz} onChange={(e) => setCalendarForm({ ...calendarForm, notiz: e.target.value })} placeholder="Details, Ansprechpartner, Hinweise …" /></label>
+                </div><button type="button" className="primary-button" onClick={() => void saveCalendarEvent()}>Termin speichern</button>
+              </div>
             </div>
           </section>
         )}
@@ -14460,6 +14610,15 @@ function MainApp() {
             {!fleetLoading && !fleetError && fleetVehicles.map((item) => {
               const checkPassed = item.lastCheck?.status === "Bestanden"
               const vehicleActive = item.status.trim().toLowerCase() === "aktiv"
+              const nowForVehicle = new Date()
+              const lastCheckDateForVehicle = item.lastCheck?.datum ? new Date(item.lastCheck.datum) : null
+              const latestCleaningForVehicle = cleaningRows
+                .filter((row) => Number(row.fahrzeug_id) === Number(item.id) && row.status === "Erledigt")
+                .sort((a, b) => String(b.datum).localeCompare(String(a.datum)))[0]
+              const lastCleaningDateForVehicle = latestCleaningForVehicle?.datum ? new Date(latestCleaningForVehicle.datum) : null
+              const checkOverdueForVehicle = !lastCheckDateForVehicle || (nowForVehicle.getTime() - lastCheckDateForVehicle.getTime()) > 10 * 24 * 60 * 60 * 1000
+              const cleaningOverdueForVehicle = !lastCleaningDateForVehicle || (nowForVehicle.getTime() - lastCleaningDateForVehicle.getTime()) > 10 * 24 * 60 * 60 * 1000
+              const vehicleTasksOverdue = checkOverdueForVehicle || cleaningOverdueForVehicle
               return (
                 <div className="card" key={item.id} style={{ border: item.openDefects > 0 ? "2px solid #dc2626" : undefined }}>
                   <div className="delivery-header">
@@ -14504,6 +14663,20 @@ function MainApp() {
                     <button type="button" className="secondary-button" onClick={() => openFleetDetail(item)}>
                       📋 Fahrzeugakte
                     </button>
+                    <button type="button" className="secondary-button" onClick={() => void openVehicleActivity(item, "Fahrzeugreinigung")}>
+                      🧽 Fahrzeugreinigung {cleaningOverdueForVehicle ? "⚠️" : ""}
+                    </button>
+                    <button type="button" className="secondary-button" onClick={() => void openVehicleActivity(item, "Fahrzeugcheck")}>
+                      ✅ Fahrzeugcheck {checkOverdueForVehicle ? "⚠️" : ""}
+                    </button>
+                    <button type="button" className="secondary-button" onClick={() => void openVehicleActivity(item, "Wöchentlicher Fahrzeug- & Unterlagencheck")}>
+                      📅 Wöchentlicher Fahrzeug- & Unterlagencheck
+                    </button>
+                    {vehicleTasksOverdue && (
+                      <p className="warning" style={{ flexBasis: "100%", margin: "4px 0 0" }}>
+                        ⚠️ Überfällig: Fahrzeugcheck oder Reinigung wurde seit mehr als 10 Tagen nicht dokumentiert.
+                      </p>
+                    )}
 
                     {item.openDefects > 0 ? (
                       <p className="warning" style={{ marginBottom: 0 }}>🔴 Fahrzeug hat offene Mängel. Vor Einsatz prüfen.</p>
@@ -14566,6 +14739,35 @@ function MainApp() {
                 <button type="button" className="secondary-button" onClick={closeVehicleDelete} disabled={vehicleDeleteSaving}>Abbrechen</button>
                 <button type="button" className="primary-button" onClick={deleteVehicle} disabled={vehicleDeleteSaving} style={{ background: "#dc2626" }}>{vehicleDeleteSaving ? "Wird gelöscht..." : "🗑️ Endgültig löschen"}</button>
               </div>
+            </div>
+          </div>
+        )}
+
+        {vehicleActivityModal && (
+          <div style={{ position: "fixed", inset: 0, background: "rgba(15, 23, 42, 0.55)", display: "flex", alignItems: "center", justifyContent: "center", padding: 16, zIndex: 1300 }} onClick={() => setVehicleActivityModal(null)}>
+            <div className="card" role="dialog" aria-modal="true" aria-label={`${vehicleActivityModal.typ} Historie`} style={{ width: "100%", maxWidth: 720, maxHeight: "85vh", overflowY: "auto" }} onClick={(event) => event.stopPropagation()}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 12 }}>
+                <div>
+                  <p className="eyebrow" style={{ marginBottom: 4 }}>{vehicleActivityModal.vehicle.kennzeichen}</p>
+                  <h2 style={{ margin: 0 }}>{vehicleActivityModal.typ}</h2>
+                  <p style={{ marginTop: 6, marginBottom: 0, color: "#64748b" }}>{vehicleActivityModal.vehicle.hersteller_modell || vehicleActivityModal.vehicle.fahrzeugtyp || "Fahrzeug"}</p>
+                </div>
+                <button type="button" className="secondary-button" onClick={() => setVehicleActivityModal(null)}>Schließen</button>
+              </div>
+              {vehicleActivityLoading ? <p style={{ marginTop: 20 }}>Historie wird geladen …</p> : vehicleActivityError ? <p className="warning" style={{ marginTop: 20 }}>{vehicleActivityError}</p> : vehicleActivityRows.length === 0 ? <p style={{ marginTop: 20 }}>Noch keine Einträge vorhanden. Sobald ein Mitarbeiter diese Aufgabe abschließt, erscheint sie hier.</p> : (
+                <div style={{ marginTop: 18 }}>
+                  {vehicleActivityRows.map((activity) => (
+                    <div key={activity.id} style={{ borderTop: "1px solid #e5e7eb", padding: "14px 0", display: "grid", gridTemplateColumns: "minmax(150px, 1fr) auto", gap: 8, alignItems: "start" }}>
+                      <div>
+                        <strong>{activity.mitarbeiter_name || "Unbekannt"}</strong>
+                        <div style={{ color: "#64748b", fontSize: 13 }}>{new Date(`${activity.datum}T12:00:00`).toLocaleDateString("de-DE")}</div>
+                        <div style={{ marginTop: 5 }}>{activity.beschreibung}</div>
+                      </div>
+                      {activity.status && <span className={`status-badge ${activity.status === "Erfolgreich" || activity.status === "Erledigt" ? "success" : ""}`}>{activity.status}</span>}
+                    </div>
+                  ))}
+                </div>
+              )}
             </div>
           </div>
         )}
@@ -15526,10 +15728,30 @@ function MainApp() {
 }
 
 
+function formatTrackingDateTime(value?: string | null): string | null {
+  if (!value) return null
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return value
+  return new Intl.DateTimeFormat("de-DE", {
+    timeZone: "Europe/Berlin",
+    day: "2-digit",
+    month: "2-digit",
+    year: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  }).format(date).replace(",", "")
+}
+
 type PublicTrackingResult = {
   status: string | null
-  plannedTime: string | null
+  createdTime?: string | null
+  plannedTime?: string | null
   pickupStatus: string | null
+  arrivalTime?: string | null
+  deliveredTime?: string | null
+  departureTime?: string | null
+  recipientName?: string | null
+  signedDocumentUrl?: string | null
 }
 
 function PublicTrackingPage() {
@@ -15562,30 +15784,55 @@ function PublicTrackingPage() {
   }, [])
 
   const status = (result?.status || "Offen").trim()
-  const completed = status.toLowerCase() === "erledigt"
-  const steps = ["Offen", "Unterwegs", "Beim Kunden", "Erledigt"]
-  const currentStep = steps.findIndex((step) => step.toLowerCase() === status.toLowerCase())
+  const normalizedStatus = status.toLowerCase().trim()
+  const completed = ["erledigt", "delivered"].includes(normalizedStatus)
+  const onTheWay = ["unterwegs", "on the way", "beim kunden"].includes(normalizedStatus)
+  const steps = ["Tour Created", "On the way", "Delivered"]
+  const currentStep = completed ? 2 : onTheWay ? 1 : 0
+  const displayStatus = completed ? "Delivered" : onTheWay ? "On the way" : "Tour Created"
 
   return (
     <main className="public-tracking-page">
       <section className="public-tracking-card" aria-live="polite">
-        <div className="public-tracking-brand">uzemmi · TransportApp</div>
+        <div className="public-tracking-brand" style={{ fontSize: 26, fontWeight: 900, letterSpacing: "0.08em", textTransform: "uppercase" }}>UZEMMI</div>
         <h1>Sendungsverfolgung</h1>
         {loading ? <p className="public-tracking-muted">Sendungsstatus wird geladen …</p> : error ? (
           <div className="public-tracking-error"><strong>Tracking nicht verfügbar</strong><p>{error}</p></div>
         ) : result ? (
           <>
             <p className="public-tracking-muted">Aktueller Sendungsstatus</p>
-            <div className={`public-tracking-status ${completed ? "is-complete" : ""}`}>{status}</div>
+            <div className={`public-tracking-status ${completed ? "is-complete" : ""}`}>{displayStatus}</div>
             <ol className="public-tracking-steps">
               {steps.map((step, index) => (
                 <li key={step} className={index <= currentStep ? "is-reached" : ""}>
                   <span className="public-tracking-step-dot" />
                   <span>{step}</span>
+                  <strong style={{ marginLeft: "auto", fontSize: 13, fontWeight: 700, color: index <= currentStep ? "inherit" : "#9ca3af" }}>
+                    {index === 0 ? formatTrackingDateTime(result.createdTime) : null}
+                    {index === 1 ? formatTrackingDateTime(result.departureTime) : null}
+                    {index === 2 ? formatTrackingDateTime(result.deliveredTime) : null}
+                  </strong>
                 </li>
               ))}
             </ol>
-            {result.plannedTime && <div className="public-tracking-detail"><span>Geplante Zeit</span><strong>{result.plannedTime.slice(0, 5)} Uhr</strong></div>}
+            {completed && result.deliveredTime && <div className="public-tracking-detail"><span>POD</span><strong>{formatTrackingDateTime(result.deliveredTime)}</strong></div>}
+            
+            
+            {completed && result.recipientName && <div className="public-tracking-detail"><span>Received by</span><strong>{result.recipientName}</strong></div>}
+            {completed && result.signedDocumentUrl && (
+              <div className="public-tracking-document">
+                <h2>Signed delivery note</h2>
+                <a href={result.signedDocumentUrl} target="_blank" rel="noopener noreferrer">
+                  View signed delivery note
+                </a>
+                {/* The signed URL expires after five minutes. */}
+                {/\.(png|jpe?g|webp)(\?|$)/i.test(result.signedDocumentUrl) && (
+                  <a href={result.signedDocumentUrl} target="_blank" rel="noopener noreferrer">
+                    <img src={result.signedDocumentUrl} alt="Signed delivery note" style={{ display: "block", width: "100%", height: "auto", marginTop: 12, borderRadius: 8 }} />
+                  </a>
+                )}
+              </div>
+            )}
           </>
         ) : null}
         <p className="public-tracking-footer">Diese Seite zeigt nur den Status der über diesen persönlichen Link aufgerufenen Sendung.</p>
