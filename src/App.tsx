@@ -431,6 +431,25 @@ type FinanceEntry = {
 }
 
 
+type FinanceTourSummary = {
+  id: number
+  tournummer: string
+  datum: string
+  fahrer: string | null
+  status: string
+  rechnungsstatus: string | null
+  kilometer: number
+  umsatz: number
+}
+
+type FinanceCostSettings = {
+  verbrauch: string
+  dieselpreis: string
+  fahrerlohn: string
+  standardstunden: string
+  fahrzeugkostenProKm: string
+}
+
 type PlannedCost = {
   id: string
   name: string
@@ -971,18 +990,22 @@ function MainApp() {
 
   async function loadVehicleCleaning() {
     setCleaningLoading(true)
+
     const { data, error } = await supabase
       .from("fahrzeug_reinigungen")
       .select("id, fahrzeug_id, user_id, reinigungsart, datum, status, bemerkung, erstellt_am")
       .order("datum", { ascending: false })
       .limit(200)
+
     if (error) {
+      console.error("Fehler beim Laden der Fahrzeugreinigungen:", error)
       setCleaningMessage(`Reinigungen konnten nicht geladen werden: ${error.message}`)
       setCleaningRows([])
     } else {
       setCleaningRows((data || []) as VehicleCleaning[])
       setCleaningMessage("")
     }
+
     setCleaningLoading(false)
   }
 
@@ -1068,6 +1091,8 @@ function MainApp() {
   const [sopConfirmingId, setSopConfirmingId] = useState<number | null>(null)
   const [sopReminderOpen, setSopReminderOpen] = useState(false)
   const [pendingSops, setPendingSops] = useState<SopRecord[]>([])
+  const [sopSearch, setSopSearch] = useState("")
+  const [sopView, setSopView] = useState<"Offen" | "Erledigt" | "SOP" | "Sonstige">("Offen")
   const [adminSopConfirmations, setAdminSopConfirmations] = useState<AdminSopConfirmation[]>([])
   const [adminSopLoading, setAdminSopLoading] = useState(false)
   const [adminSopError, setAdminSopError] = useState("")
@@ -1093,11 +1118,28 @@ function MainApp() {
   const isDisponent = normalizedRole === "disponent" || normalizedRole === "dispatcher"
   const canManageSops = isAdmin || isDisponent
   const pendingSopCount = currentUser?.rolle === "Fahrer" ? pendingSops.length : 0
+  const visibleSops = sops.filter((sop) => {
+    const confirmed = hasConfirmedSop(sop)
+    const isSop = /\\bSOP\\b/i.test(`${sop.titel} ${sop.beschreibung || ""}`)
+    const matchesView =
+      sopView === "Offen" ? !confirmed :
+      sopView === "Erledigt" ? confirmed :
+      sopView === "SOP" ? isSop : !isSop
+    const query = sopSearch.trim().toLocaleLowerCase("de")
+    const matchesSearch = !query || `${sop.titel} ${sop.beschreibung || ""} ${sop.inhalt}`.toLocaleLowerCase("de").includes(query)
+    return matchesView && matchesSearch
+  })
   const operationalAlertCount = isAdmin || isDisponent ? defectCounts.gesamt : 0
 
   function hasPermission(permission: PermissionKey): boolean {
     if (isAdmin) return true
     return Boolean(currentUser?.berechtigungen?.includes(permission))
+  }
+
+  // Fahrer benötigen Zugriff auf die Fahrzeugreinigung im Arbeitsalltag,
+  // auch wenn die separate Verwaltungsberechtigung nicht zugewiesen wurde.
+  function canAccessVehicleCleaning(): boolean {
+    return isAdmin || currentUser?.rolle === "Fahrer" || hasPermission("reinigung")
   }
 
   const canManageTours =
@@ -2551,6 +2593,19 @@ function MainApp() {
 
   const [financeSection, setFinanceSection] = useState<"finanzen" | "kalkulation" | "ziele">("finanzen")
   const [financeMonth, setFinanceMonth] = useState(() => getToday().slice(0, 7))
+  const [financePeriodStart, setFinancePeriodStart] = useState(() => `${getToday().slice(0, 7)}-01`)
+  const [financePeriodEnd, setFinancePeriodEnd] = useState(() => {
+    const d = new Date(`${getToday().slice(0, 7)}-01T12:00:00`)
+    d.setMonth(d.getMonth() + 1)
+    d.setDate(0)
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`
+  })
+  const [financeTours, setFinanceTours] = useState<FinanceTourSummary[]>([])
+  const [financeCostSettings, setFinanceCostSettings] = useState<FinanceCostSettings>(() => {
+    try {
+      return { verbrauch: "10", dieselpreis: "1.70", fahrerlohn: "18", standardstunden: "8", fahrzeugkostenProKm: "0.17", ...JSON.parse(window.localStorage.getItem("transportapp_finance_cost_settings") || "{}") }
+    } catch { return { verbrauch: "10", dieselpreis: "1.70", fahrerlohn: "18", standardstunden: "8", fahrzeugkostenProKm: "0.17" } }
+  })
   const [financeRows, setFinanceRows] = useState<FinanceEntry[]>([])
   const [financeLoading, setFinanceLoading] = useState(false)
   const [financeMessage, setFinanceMessage] = useState("")
@@ -5289,6 +5344,9 @@ function MainApp() {
   useEffect(() => {
     window.localStorage.setItem("transportapp_finance_goals", JSON.stringify(financeGoals))
   }, [financeGoals])
+  useEffect(() => {
+    window.localStorage.setItem("transportapp_finance_cost_settings", JSON.stringify(financeCostSettings))
+  }, [financeCostSettings])
 
   function plannedCostsForMonth(month: string): FinanceEntry[] {
     return plannedCosts.filter((cost) => cost.active && cost.startMonth <= month).map((cost) => ({
@@ -5302,6 +5360,27 @@ function MainApp() {
 
   const activeGoal = financeGoals.find((goal) => goal.month === financeMonth)
   const plannedMonthCosts = plannedCostsForMonth(financeMonth)
+  function plannedCostsForPeriod(start: string, end: string): FinanceEntry[] {
+    if (!start || !end || start > end) return []
+    const result: FinanceEntry[] = []
+    const cursor = new Date(`${start.slice(0, 7)}-01T12:00:00`)
+    const last = new Date(`${end.slice(0, 7)}-01T12:00:00`)
+    while (cursor <= last) {
+      const month = `${cursor.getFullYear()}-${String(cursor.getMonth() + 1).padStart(2, "0")}`
+      plannedCosts.filter((cost) => cost.active && cost.startMonth <= month).forEach((cost) => {
+        const day = `${month}-${String(Math.min(28, Math.max(1, cost.day))).padStart(2, "0")}`
+        if (day >= start && day <= end) result.push({
+          id: -Math.abs(`${cost.id}-${day}`.split("").reduce((sum, char) => sum + char.charCodeAt(0), 0)),
+          datum: day, typ: "Ausgabe", kategorie: cost.category,
+          beschreibung: `${cost.name} · automatisch geplant`, betrag: cost.amount,
+          bezahlt: false, tour_id: null,
+        })
+      })
+      cursor.setMonth(cursor.getMonth() + 1)
+    }
+    return result
+  }
+  const plannedPeriodCosts = plannedCostsForPeriod(financePeriodStart, financePeriodEnd)
 
   async function savePlannedCost() {
     const amount = Number(plannedCostForm.amount.replace(",", "."))
@@ -5324,20 +5403,60 @@ function MainApp() {
   }
 
   async function loadFinanceRows() {
+    if (!financePeriodStart || !financePeriodEnd || financePeriodStart > financePeriodEnd) {
+      setFinanceMessage("Bitte einen gültigen Zeitraum auswählen.")
+      return
+    }
     setFinanceLoading(true)
     setFinanceMessage("")
-    const start = `${financeMonth}-01`
-    const endDate = new Date(`${financeMonth}-01T12:00:00`)
-    endDate.setMonth(endDate.getMonth() + 1)
-    const end = `${endDate.getFullYear()}-${String(endDate.getMonth() + 1).padStart(2, "0")}-01`
     const { data, error } = await supabase.from("finanzbuchungen")
       .select("id, datum, typ, kategorie, beschreibung, betrag, bezahlt, tour_id, erstellt_am")
-      .gte("datum", start).lt("datum", end)
+      .gte("datum", financePeriodStart).lte("datum", financePeriodEnd)
       .order("datum", { ascending: false }).order("id", { ascending: false })
     if (error) {
       setFinanceRows([])
       setFinanceMessage(`Finanzdaten konnten nicht geladen werden: ${error.message}`)
-    } else setFinanceRows((data || []) as FinanceEntry[])
+      setFinanceTours([])
+      setFinanceLoading(false)
+      return
+    }
+    const entries = (data || []) as FinanceEntry[]
+    setFinanceRows(entries)
+
+    // Abgeschlossene und bezahlte Touren werden einzeln ausgewertet.
+    const { data: tourData, error: tourError } = await supabase.from("touren")
+      .select("id, tournummer, datum, fahrer, status, rechnungsstatus, km_start, km_ende, zu_fahrende_km")
+      .gte("datum", financePeriodStart).lte("datum", financePeriodEnd)
+      .eq("rechnungsstatus", "Bezahlt")
+      .order("datum", { ascending: false })
+    if (tourError) {
+      setFinanceTours([])
+      setFinanceMessage(`Touren konnten nicht geladen werden: ${tourError.message}`)
+    } else {
+      const completedPaid = (tourData || []).filter((tour: any) => {
+        const status = String(tour.status || "").toLowerCase()
+        return status.includes("abgeschlossen") || status.includes("erledigt")
+      })
+      const ids = completedPaid.map((tour: any) => Number(tour.id)).filter(Number.isFinite)
+      let deliveryRows: any[] = []
+      if (ids.length) {
+        const { data: deliveriesData, error: deliveriesError } = await supabase
+          .from("lieferungen").select("tour_id, kundenbetrag, zusatzkosten").in("tour_id", ids)
+        if (!deliveriesError) deliveryRows = deliveriesData || []
+      }
+      const revenueByTour = new Map<number, number>()
+      deliveryRows.forEach((row: any) => {
+        const id = Number(row.tour_id)
+        const base = Number(row.kundenbetrag || 0)
+        const extras = Array.isArray(row.zusatzkosten) ? row.zusatzkosten.reduce((sum: number, item: any) => sum + (Number(item.amount) || 0), 0) : 0
+        revenueByTour.set(id, (revenueByTour.get(id) || 0) + base + extras)
+      })
+      setFinanceTours(completedPaid.map((tour: any) => {
+        const km = Number(tour.zu_fahrende_km || 0) || (Number(tour.km_start) > 0 && Number(tour.km_ende) >= Number(tour.km_start) ? Number(tour.km_ende) - Number(tour.km_start) : 0)
+        const invoiceEntry = entries.find((entry) => entry.tour_id === Number(tour.id) && entry.typ === "Einnahme" && entry.kategorie === "Rechnungsumsatz")
+        return { id: Number(tour.id), tournummer: String(tour.tournummer || `#${tour.id}`), datum: String(tour.datum || ""), fahrer: tour.fahrer || null, status: String(tour.status || ""), rechnungsstatus: tour.rechnungsstatus || null, kilometer: km, umsatz: invoiceEntry ? Number(invoiceEntry.betrag || 0) : (revenueByTour.get(Number(tour.id)) || 0) }
+      }))
+    }
     setFinanceLoading(false)
   }
 
@@ -5377,8 +5496,23 @@ function MainApp() {
 
   const financeIncome = financeRows.filter((row) => row.typ === "Einnahme" && row.bezahlt).reduce((sum, row) => sum + Number(row.betrag || 0), 0)
   const financePendingIncome = financeRows.filter((row) => row.typ === "Einnahme" && !row.bezahlt).reduce((sum, row) => sum + Number(row.betrag || 0), 0)
-  const financeExpenses = financeRows.filter((row) => row.typ === "Ausgabe").reduce((sum, row) => sum + Number(row.betrag || 0), 0) + plannedMonthCosts.reduce((sum, row) => sum + row.betrag, 0)
+  const financeExpenses = financeRows.filter((row) => row.typ === "Ausgabe").reduce((sum, row) => sum + Number(row.betrag || 0), 0) + plannedPeriodCosts.reduce((sum, row) => sum + row.betrag, 0)
   const financeResult = financeIncome - financeExpenses
+  const financeTourProfitRows = financeTours.map((tour) => {
+    const linked = financeRows.filter((entry) => entry.tour_id === tour.id && entry.typ === "Ausgabe")
+    const actualFuel = linked.filter((entry) => /diesel|tank|kraftstoff|fuel/i.test(`${entry.kategorie} ${entry.beschreibung || ""}`)).reduce((sum, entry) => sum + Number(entry.betrag || 0), 0)
+    const actualRepairs = linked.filter((entry) => /reparatur|werkstatt|sonder/i.test(`${entry.kategorie} ${entry.beschreibung || ""}`)).reduce((sum, entry) => sum + Number(entry.betrag || 0), 0)
+    const actualPersonnel = linked.filter((entry) => /personal|lohn|fahrer/i.test(`${entry.kategorie} ${entry.beschreibung || ""}`)).reduce((sum, entry) => sum + Number(entry.betrag || 0), 0)
+    const estimatedFuel = tour.kilometer / 100 * (Number(financeCostSettings.verbrauch.replace(",", ".")) || 0) * (Number(financeCostSettings.dieselpreis.replace(",", ".")) || 0)
+    const estimatedPersonnel = (Number(financeCostSettings.standardstunden.replace(",", ".")) || 0) * (Number(financeCostSettings.fahrerlohn.replace(",", ".")) || 0)
+    const vehicleRunningCosts = tour.kilometer * (Number(financeCostSettings.fahrzeugkostenProKm.replace(",", ".")) || 0)
+    const fuel = actualFuel > 0 ? actualFuel : estimatedFuel
+    const personnel = actualPersonnel > 0 ? actualPersonnel : estimatedPersonnel
+    return { ...tour, fuel, personnel, vehicleRunningCosts, repairs: actualRepairs, totalCosts: fuel + personnel + vehicleRunningCosts + actualRepairs, profit: tour.umsatz - fuel - personnel - vehicleRunningCosts - actualRepairs, fuelEstimated: actualFuel <= 0, personnelEstimated: actualPersonnel <= 0 }
+  })
+  const financeTourRevenue = financeTourProfitRows.reduce((sum, tour) => sum + tour.umsatz, 0)
+  const financeTourCosts = financeTourProfitRows.reduce((sum, tour) => sum + tour.totalCosts, 0)
+  const financeTourProfit = financeTourProfitRows.reduce((sum, tour) => sum + tour.profit, 0)
   const calcRevenue = Number(financeCalc.umsatz.replace(",", ".")) || 0
   const calcFuelCost = ((Number(financeCalc.kilometer.replace(",", ".")) || 0) / 100) * (Number(financeCalc.verbrauch.replace(",", ".")) || 0) * (Number(financeCalc.dieselpreis.replace(",", ".")) || 0)
   const calcDriverCost = (Number(financeCalc.fahrerstunden.replace(",", ".")) || 0) * (Number(financeCalc.fahrerlohn.replace(",", ".")) || 0)
@@ -6171,6 +6305,18 @@ function MainApp() {
     )
 
     setActiveDelivery(id)
+  }
+
+  async function setManualDepartureTime(id: number, time: string) {
+    const delivery = deliveries.find((item) => item.id === id)
+    if (!delivery) return
+    const success = await updateDelivery(id, {
+      abfahrtszeit: time || null,
+    })
+    if (!success) return
+    setDeliveries((old) => old.map((item) =>
+      item.id === id ? { ...item, departureTime: time || undefined } : item
+    ))
   }
 
   async function setComplaint(
@@ -9044,6 +9190,7 @@ function MainApp() {
         loadVehicles()
       }
     }
+
   }
 
   // =====================================================
@@ -9091,10 +9238,13 @@ function MainApp() {
   // =====================================================
 
   useEffect(() => {
-    if (page === "cleaning" && hasPermission("fahrzeuge")) {
-      loadVehicleCleaning()
+    if (page !== "cleaning" || !canAccessVehicleCleaning()) return
+
+    if (vehicles.length === 0) {
+      void loadVehicles()
     }
-  }, [page])
+    void loadVehicleCleaning()
+  }, [page, currentUser])
 
   if (authLoading) {
     return (
@@ -9914,7 +10064,7 @@ function MainApp() {
           <span style={{ marginRight: "8px" }}>✅</span>Fahrzeugcheck
         </button>}
 
-        {hasPermission("reinigung") && (
+        {canAccessVehicleCleaning() && (
           <button
             className={page === "cleaning" ? "nav active" : "nav"}
             onClick={() => navigateTo("cleaning")}
@@ -10157,7 +10307,7 @@ function MainApp() {
           className={page === "sops" ? "nav active" : "nav"}
           onClick={() => navigateTo("sops")}
         >
-          <span style={{ marginRight: "8px" }}>📚</span>SOP & Schulungen
+          <span style={{ marginRight: "8px" }}>📚</span>Schulung
         </button>}
 
 
@@ -12218,6 +12368,24 @@ function MainApp() {
                           )}
                         </div>
 
+                        <div className="time-section" style={{ marginTop: "12px" }}>
+                          <label><strong>Abfahrtszeit manuell eintragen</strong></label>
+                          <div className="time-row">
+                            <input
+                              type="time"
+                              value={delivery.departureTime || ""}
+                              disabled={deliverySaving}
+                              onChange={(event) => void setManualDepartureTime(delivery.id, event.target.value)}
+                            />
+                            <button
+                              type="button"
+                              className="secondary-button"
+                              disabled={deliverySaving}
+                              onClick={() => void setManualDepartureTime(delivery.id, getCurrentTime())}
+                            >Jetzt</button>
+                          </div>
+                        </div>
+
                         <button
                           className="primary-button"
                           disabled={
@@ -12421,7 +12589,7 @@ function MainApp() {
               <div className="card" style={{ marginBottom: "18px", padding: "16px 18px" }}>
                 <label style={{ display: "block", fontWeight: 700, color: "#334155" }}>
                   Suche in deiner Akquise-Pipeline
-                  <input style={{ marginTop: "8px" }} value={acquisitionSearch} onChange={(e) => setAcquisitionSearch(e.target.value)} placeholder="Firma, Ort, Ansprechpartner oder Status ..." />
+                  <input style={{ marginTop: "8px" }} value={acquisitionSearch} onChange={(e) => setAcquisitionSearch(e.target.value)} placeholder="Alle Ordner durchsuchen: Firma, Ort, Ansprechpartner oder Status ..." />
                 </label>
               </div>
 
@@ -12509,7 +12677,7 @@ function MainApp() {
                   >＋ Neuer Ordner</button>
                 </aside>
                 <div className="acquisition-kanban">
-                {(selectedAcquisitionFolder === "Alle Firmen"
+                {((acquisitionSearch.trim() || selectedAcquisitionFolder === "Alle Firmen")
                   ? ["Nicht zugeordnet", ...acquisitionFolders]
                   : [selectedAcquisitionFolder]).map((folder) => {
                   const folderRows = filteredAcquisitions.filter((row) => {
@@ -14312,13 +14480,26 @@ function MainApp() {
             </div>
             <div className="card" style={{ display: financeSection === "finanzen" ? "block" : "none" }}>
               <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",gap:"12px",flexWrap:"wrap"}}>
-                <div><h2>💶 Finanzen & Kalkulation</h2><p style={{marginBottom:0}}>Monatlichen Gewinn im Blick behalten und einzelne Touren vorab kalkulieren.</p></div>
-                <label style={{minWidth:"170px"}}>Monat<input type="month" value={financeMonth} onChange={(e) => setFinanceMonth(e.target.value)} onBlur={() => void loadFinanceRows()} /></label>
+                <div><h2>💶 Finanzübersicht</h2><p style={{marginBottom:0}}>Einnahmen, Ausgaben, Umsatz und Ergebnis im frei wählbaren Zeitraum: {financePeriodStart} bis {financePeriodEnd}.</p></div>
+                <div style={{display:"flex",gap:"8px",flexWrap:"wrap",alignItems:"end"}}>
+                  <label style={{minWidth:"150px"}}>Monatsauswahl<input type="month" value={financeMonth} onChange={(e) => {
+                    const month = e.target.value
+                    if (!month) return
+                    setFinanceMonth(month)
+                    setFinancePeriodStart(`${month}-01`)
+                    const last = new Date(`${month}-01T12:00:00`); last.setMonth(last.getMonth() + 1); last.setDate(0)
+                    setFinancePeriodEnd(`${last.getFullYear()}-${String(last.getMonth() + 1).padStart(2, "0")}-${String(last.getDate()).padStart(2, "0")}`)
+                  }} /></label>
+                  <label>Von<input type="date" value={financePeriodStart} onChange={(e) => setFinancePeriodStart(e.target.value)} /></label>
+                  <label>Bis<input type="date" value={financePeriodEnd} onChange={(e) => setFinancePeriodEnd(e.target.value)} /></label>
+                  <button type="button" className="primary-button" onClick={() => void loadFinanceRows()} disabled={financeLoading}>Zeitraum anzeigen</button>
+                </div>
               </div>
               <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(170px,1fr))",gap:"12px",marginTop:"18px"}}>
-                <div className="card" style={{background:"#ecfdf5",border:"1px solid #bbf7d0"}}><div style={{fontSize:"24px"}}>📈</div><strong>Einnahmen</strong><div style={{fontSize:"25px",fontWeight:800,color:"#166534"}}>{euro(financeIncome)}</div></div>
+                <div className="card" style={{background:"#ecfdf5",border:"1px solid #bbf7d0"}}><div style={{fontSize:"24px"}}>📈</div><strong>Einnahmen (bezahlt)</strong><div style={{fontSize:"25px",fontWeight:800,color:"#166534"}}>{euro(financeIncome)}</div></div>
+                <div className="card" style={{background:"#eff6ff",border:"1px solid #bfdbfe"}}><div style={{fontSize:"24px"}}>💶</div><strong>Umsatz abgeschlossener, bezahlter Touren</strong><div style={{fontSize:"25px",fontWeight:800,color:"#1d4ed8"}}>{euro(financeTourRevenue)}</div></div>
                 <div className="card" style={{background:"#fff1f2",border:"1px solid #fecdd3"}}><div style={{fontSize:"24px"}}>📉</div><strong>Ausgaben</strong><div style={{fontSize:"25px",fontWeight:800,color:"#be123c"}}>{euro(financeExpenses)}</div></div>
-                <div className="card" style={{background:financeResult >= 0 ? "#eff6ff" : "#fff7ed",border:financeResult >= 0 ? "1px solid #bfdbfe" : "1px solid #fed7aa"}}><div style={{fontSize:"24px"}}>{financeResult >= 0 ? "🟢" : "🔴"}</div><strong>Monatsergebnis</strong><div style={{fontSize:"25px",fontWeight:800,color:financeResult >= 0 ? "#1d4ed8" : "#c2410c"}}>{euro(financeResult)}</div><small>{financeResult >= 0 ? "Überschuss" : "Defizit"}</small></div>
+                <div className="card" style={{background:financeResult >= 0 ? "#eff6ff" : "#fff7ed",border:financeResult >= 0 ? "1px solid #bfdbfe" : "1px solid #fed7aa"}}><div style={{fontSize:"24px"}}>{financeResult >= 0 ? "🟢" : "🔴"}</div><strong>Gebuchtes Ergebnis</strong><div style={{fontSize:"25px",fontWeight:800,color:financeResult >= 0 ? "#1d4ed8" : "#c2410c"}}>{euro(financeResult)}</div><small>Bezahlte Einnahmen minus erfasste/geplante Ausgaben</small></div>
               </div>
               <div style={{marginTop:"18px",padding:"14px",borderRadius:"12px",background:"#f8fafc",border:"1px solid #e2e8f0"}}>
                 <h3 style={{marginTop:0}}>➕ Neue Buchung</h3>
@@ -14385,8 +14566,33 @@ function MainApp() {
                 <div className="card" style={{background:calcMargin >= 0 ? "#ecfdf5" : "#fff1f2"}}><strong>Deckungsbeitrag</strong><div style={{fontSize:"22px",fontWeight:800}}>{euro(calcMargin)}</div></div>
               </div>
             </div>
+            <div className="card" style={{marginTop:"16px"}}>
+              <h3>🚚 Abgeschlossene und bezahlte Touren – Einzelübersicht</h3>
+              <p style={{marginTop:0}}>Kraftstoff, weitere Fahrzeugkosten pro Kilometer und Personal werden zunächst geschätzt, solange keine tatsächlichen Kostenbuchungen mit der Tour-ID verknüpft sind. Verknüpfe Tankbelege, Lohnkosten und Sonderreparaturen über „Neue Buchung“ mit der passenden Tour-ID; dann werden diese tatsächlichen Werte für die jeweilige Kostenart verwendet.</p>
+              <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(170px,1fr))",gap:"10px",marginBottom:"14px"}}>
+                <label>Verbrauch l/100 km<input type="number" min="0" step="0.1" value={financeCostSettings.verbrauch} onChange={(e) => setFinanceCostSettings({...financeCostSettings, verbrauch:e.target.value})}/></label>
+                <label>Dieselpreis €/l (Schätzung)<input type="number" min="0" step="0.01" value={financeCostSettings.dieselpreis} onChange={(e) => setFinanceCostSettings({...financeCostSettings, dieselpreis:e.target.value})}/></label>
+                <label>Fahrerlohn €/Std.<input type="number" min="0" step="0.5" value={financeCostSettings.fahrerlohn} onChange={(e) => setFinanceCostSettings({...financeCostSettings, fahrerlohn:e.target.value})}/></label>
+                <label>Weitere Fahrzeugkosten €/km<input type="number" min="0" step="0.01" value={financeCostSettings.fahrzeugkostenProKm} onChange={(e) => setFinanceCostSettings({...financeCostSettings, fahrzeugkostenProKm:e.target.value})}/></label>
+                <label>Standardstunden je Tour (Schätzung)<input type="number" min="0" step="0.25" value={financeCostSettings.standardstunden} onChange={(e) => setFinanceCostSettings({...financeCostSettings, standardstunden:e.target.value})}/></label>
+              </div>
+              <small>Diese Annahmen werden lokal gespeichert. Für präzise Gewinne: tatsächliche Tankbelege und Sonderreparaturen immer mit der Tour-ID erfassen. Die Tour-Kalkulation ist eine Schätzung und wird nicht automatisch als Ausgabe doppelt verbucht.</small>
+              {financeTourProfitRows.length === 0 ? <p style={{marginTop:"12px"}}>Im gewählten Zeitraum wurden keine Touren gefunden, die sowohl abgeschlossen als auch bezahlt sind.</p> : <div style={{marginTop:"12px",display:"grid",gap:"12px"}}>{financeTourProfitRows.map((tour) => <article key={tour.id} style={{border:"1px solid #dbeafe",borderRadius:"12px",padding:"14px",background:"#f8fafc"}}>
+                <div style={{display:"flex",justifyContent:"space-between",gap:"10px",flexWrap:"wrap",alignItems:"start"}}><div><strong style={{fontSize:"17px"}}>Tour {tour.tournummer}</strong><div style={{color:"#64748b",fontSize:"13px"}}>{tour.datum} · {tour.fahrer || "Kein Fahrer hinterlegt"} · {tour.kilometer.toLocaleString("de-DE")} km</div></div><span style={{fontWeight:800,color:tour.profit >= 0 ? "#15803d" : "#b91c1c"}}>Gewinn: {euro(tour.profit)}</span></div>
+                <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(140px,1fr))",gap:"8px",marginTop:"12px"}}>
+                  <div><small>Umsatz</small><div style={{fontWeight:700,color:"#15803d"}}>{euro(tour.umsatz)}</div></div>
+                  <div><small>Kraftstoff {tour.fuelEstimated ? "(geschätzt)" : "(Ist)"}</small><div style={{fontWeight:700}}>{euro(tour.fuel)}</div></div>
+                  <div><small>Personalkosten {tour.personnelEstimated ? "(geschätzt)" : "(Ist)"}</small><div style={{fontWeight:700}}>{euro(tour.personnel)}</div></div>
+                  <div><small>Weitere Fahrzeugkosten (geschätzt)</small><div style={{fontWeight:700}}>{euro(tour.vehicleRunningCosts)}</div></div>
+                  <div><small>Sonderreparaturen (Ist)</small><div style={{fontWeight:700}}>{euro(tour.repairs)}</div></div>
+                  <div><small>Gesamtkosten</small><div style={{fontWeight:700,color:"#be123c"}}>{euro(tour.totalCosts)}</div></div>
+                </div>
+                <div style={{marginTop:"10px",fontSize:"12px",color:"#64748b"}}>Für tatsächliche Kosten bitte eine Ausgabe mit Tour-ID {tour.id} und passender Kategorie (Diesel/Tank, Personal/Lohn oder Reparatur/Werkstatt) erfassen.</div>
+              </article>)}</div>}
+              {financeTourProfitRows.length > 0 && <div style={{marginTop:"12px",padding:"12px",background:"#eff6ff",borderRadius:"10px",display:"flex",gap:"18px",flexWrap:"wrap"}}><span>Tourumsatz: <strong>{euro(financeTourRevenue)}</strong></span><span>Tourkosten (inkl. Schätzungen): <strong>{euro(financeTourCosts)}</strong></span><span>Tourgewinn (geschätzt/ermittelt): <strong style={{color:financeTourProfit >= 0 ? "#15803d" : "#b91c1c"}}>{euro(financeTourProfit)}</strong></span></div>}
+            </div>
             <div className="card">
-              <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",gap:"10px",flexWrap:"wrap"}}><h3 style={{margin:0}}>📒 Buchungen im Monat</h3><div style={{display:"flex",gap:"8px"}}><button type="button" className="secondary-button" onClick={() => void loadFinanceRows()} disabled={financeLoading}>↻ Aktualisieren</button><button type="button" className="secondary-button" onClick={() => setFinanceShowAll(!financeShowAll)}>{financeShowAll ? "Nur Übersicht" : "Alle Details"}</button></div></div>
+              <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",gap:"10px",flexWrap:"wrap"}}><h3 style={{margin:0}}>📒 Buchungen im gewählten Zeitraum</h3><div style={{display:"flex",gap:"8px"}}><button type="button" className="secondary-button" onClick={() => void loadFinanceRows()} disabled={financeLoading}>↻ Aktualisieren</button><button type="button" className="secondary-button" onClick={() => setFinanceShowAll(!financeShowAll)}>{financeShowAll ? "Nur Übersicht" : "Alle Details"}</button></div></div>
               {financeLoading ? <p>Finanzdaten werden geladen…</p> : financeRows.length === 0 ? <p>Noch keine Buchungen für diesen Monat.</p> : <div style={{marginTop:"10px"}}>{financeRows.slice(0, financeShowAll ? 200 : 8).map((entry) => <div key={entry.id} style={{display:"flex",justifyContent:"space-between",alignItems:"center",gap:"10px",flexWrap:"wrap",borderTop:"1px solid #e2e8f0",padding:"12px 0"}}><div><strong>{entry.typ === "Einnahme" ? "📈" : "📉"} {entry.kategorie}</strong><div style={{fontSize:"13px",color:"#64748b"}}>{entry.datum} · {entry.beschreibung || "Keine Beschreibung"}{entry.tour_id ? ` · Tour ${entry.tour_id}` : ""}</div></div><div style={{display:"flex",alignItems:"center",gap:"10px"}}><strong style={{color:entry.typ === "Einnahme" ? "#15803d" : "#be123c"}}>{entry.typ === "Einnahme" ? "+" : "-"}{euro(Number(entry.betrag || 0))}</strong><button type="button" className="secondary-button" onClick={() => void deleteFinanceEntry(entry)} style={{color:"#b91c1c",borderColor:"#fecaca"}}>Löschen</button></div></div>)}</div>}
             </div>
           </section>
@@ -14523,7 +14729,7 @@ function MainApp() {
           </section>
         )}
 
-        {page === "cleaning" && hasPermission("fahrzeuge") && (
+        {page === "cleaning" && canAccessVehicleCleaning() && (
           <section>
             <div className="card">
               <h2>🧽 Fahrzeugreinigung</h2>
@@ -15327,7 +15533,7 @@ function MainApp() {
             <div className="card">
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: "12px", flexWrap: "wrap" }}>
                 <div>
-                  <h2>📚 SOP & Schulungen</h2>
+                  <h2>📚 Schulung</h2>
                   <p style={{ marginBottom: 0 }}>
                     Aktive Arbeitsanweisungen und Schulungen. Bestätigungen werden pro SOP-Version gespeichert.
                   </p>
@@ -15352,6 +15558,33 @@ function MainApp() {
                 <p style={{ margin: "6px 0 0", color: "#92400e" }}>Bitte lies und bestätige die neuen oder aktualisierten Arbeitsanweisungen. Sie bleiben offen, bis du sie bestätigt hast.</p>
               </div>
             )}
+
+            <div className="card" style={{ marginTop: "12px" }}>
+              <label style={{ display: "block", fontWeight: 700 }}>
+                Schulung suchen
+                <input
+                  value={sopSearch}
+                  onChange={(event) => setSopSearch(event.target.value)}
+                  placeholder="Titel oder Inhalt der Schulung suchen ..."
+                  style={{ marginTop: "6px" }}
+                />
+              </label>
+              <div style={{ display: "flex", gap: "8px", flexWrap: "wrap", marginTop: "12px" }}>
+                {(["Offen", "Erledigt", "SOP", "Sonstige"] as const).map((view) => (
+                  <button
+                    key={view}
+                    type="button"
+                    className={sopView === view ? "primary-button" : "secondary-button"}
+                    onClick={() => setSopView(view)}
+                  >
+                    {view === "Offen" ? `Offen (${pendingSopCount})` : view}
+                  </button>
+                ))}
+              </div>
+              <small style={{ display: "block", marginTop: "8px", color: "#64748b" }}>
+                Bestätigte Schulungen findest du unter „Erledigt“. Einträge mit „SOP“ im Titel oder in der Beschreibung werden unter „SOP“ angezeigt; EOPs und andere Schulungen unter „Sonstige“.
+              </small>
+            </div>
 
             {canManageSops && sopFormOpen && (
               <div className="card">
@@ -15390,11 +15623,11 @@ function MainApp() {
 
             {sopLoading && <div className="card"><p>SOPs werden geladen...</p></div>}
 
-            {!sopLoading && sops.length === 0 && (
-              <div className="card"><p>Keine aktiven SOPs vorhanden.</p></div>
+            {!sopLoading && visibleSops.length === 0 && (
+              <div className="card"><p>Keine Schulungen in dieser Ansicht gefunden.</p></div>
             )}
 
-            {!sopLoading && sops.map((sop) => {
+            {!sopLoading && visibleSops.map((sop) => {
               const confirmed = hasConfirmedSop(sop)
   return (
                 <div className="card" key={sop.id} style={{ marginTop: "12px" }}>
